@@ -1,0 +1,9 @@
+# VS Code specific
+.vscode/
+
+# PlatformIO specific
+.pio/
+
+# Other build artifacts
+*.bin
+*.elf
