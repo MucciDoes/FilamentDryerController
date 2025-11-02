@@ -14,6 +14,8 @@
 #define TFT_DC    2
 #define TFT_RST   4
 
+#define TFT_BL   21  // LED back-light control pin
+
 #define TOUCH_CS 5 // Touch screen chip select
 
 #define LOAD_GLCD   // Font 1. Original Adafruit 8 pixel font needs ~1820 bytes in FLASH

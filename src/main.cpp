@@ -31,6 +31,10 @@ void setup() {
     while (1) delay(1); // Halt forever if sensor not found
   }
 
+  // Turn on the backlight
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+
   // Initialize the TFT screen
   tft.init();
   tft.setRotation(1); // 1 for landscape, 0 for portrait
