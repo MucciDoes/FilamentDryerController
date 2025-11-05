@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <title>Filament Dryer</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin: 20px; background-color: #e9e9e9; }
+        h1 { color: #333; }
+        .grid-container { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; max-width: 600px; margin: 20px auto; }
+        .grid-item { background-color: #f2f2f2; padding: 15px; border-radius: 8px; position: relative; }
+        .data { font-size: 1.5em; font-weight: bold; cursor: pointer; }
+        .label { font-size: 0.9em; color: #555; }
+        .status-on { color: red; }
+        .status-off { color: grey; }
+        .mode-selector { margin-bottom: 20px; }
+        .group-box { border: 2px solid #ccc; border-radius: 8px; margin-top: 20px; padding: 10px; }
+        .group-box h3 { margin: 0 0 10px 0; color: #555; }
+        .sensor-value { border: 2px solid #333 !important; }
+        .temp-group { border-color: #E57373; } /* Soft Red */
+        .temp-group h3 { color: #C62828; } /* Darker Red */
+        .hum-group { border-color: #64B5F6; } /* Soft Blue */
+        .hum-group h3 { color: #1565C0; } /* Darker Blue */
+        .temp-value { border: 2px solid #E57373 !important; } /* Match temp group border */
+        .hum-value { border: 2px solid #64B5F6 !important; } /* Match hum group border */
+        /* Hide number input spinners */
+        .edit-in-place[type=number] {
+            -moz-appearance: textfield; /* Firefox */
+        }
+        .edit-in-place::-webkit-outer-spin-button,
+        .edit-in-place::-webkit-inner-spin-button {
+            -webkit-appearance: none; /* Chrome, Safari, Edge, Opera */
+            margin: 0;
+        }
+        .edit-in-place { font-size: 1.2em; font-weight: bold; width: 80px; text-align: center; }
+        .control-box { border: 2px solid #FFB300 !important; background-color: #FFF8E1 !important; } /* Yellow theme */
+        .button-group button {
+            margin: 0 5px;
+            padding: 8px 12px;
+            border: 2px solid #ccc;
+            background-color: #e7e7e7;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        .button-group button.active { background-color: #4CAF50; color: white; border-color: #3e8e41; }
+        .help-icon {
+            position: absolute;
+            top: 5px;
+            right: 7px;
+            color: #1565C0; /* Dark Blue */
+            cursor: pointer;
+            font-size: 18px;
+            font-weight: bold;
+            font-family: 'Georgia', serif;
+        }
+        .hidden-by-mode {
+            visibility: hidden;
+            pointer-events: none; /* Prevent interaction with invisible elements */
+        }
+        .help-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.5); display: none; /* Hidden by default */
+            justify-content: center; align-items: center; z-index: 1000;
+        }
+        .help-box {
+            background-color: #fff; padding: 20px; border-radius: 8px;
+            max-width: 80%; width: 300px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            position: relative;
+        }
+        .help-close { position: absolute; top: 5px; right: 10px; font-size: 24px; cursor: pointer; }
+    </style>
+    <script>
+        let currentData = {};
+        function fetchData() {
+            var x = new XMLHttpRequest();
+            x.onreadystatechange = function () {
+                if (this.readyState == 4 && this.status == 200) {
+                    currentData = JSON.parse(this.responseText);
+                    document.getElementById('temp_val').innerText = currentData.temperature + ' °C';
+                    document.getElementById('hum_val').innerText = currentData.humidity + ' %';
+                    document.getElementById('drying_temp_val').innerText = currentData.drying_temp + ' °C';
+                    document.getElementById('hum_set_val').innerText = currentData.setpoint_hum + ' %';
+                    document.getElementById('warm_temp_val').innerText = currentData.warm_temp + ' °C';
+                    document.getElementById('hum_hyst_val').innerText = currentData.hum_hyst + ' %';
+                    document.getElementById('stall_interval_val').innerText = currentData.stall_interval / 60000 + ' min';
+                    document.getElementById('stall_delta_val').innerText = currentData.stall_delta + ' %';
+                    document.getElementById('heat_duration_val').innerText = (currentData.heat_duration / 3600000).toFixed(1) + ' hours';
+
+                    var remEl = document.getElementById('heat_rem_item');
+                    if (currentData.process_state === 'HEATING' && currentData.is_enabled) {
+                        var rem_ms = currentData.heat_remaining;
+                        var h = Math.floor(rem_ms / 3600000);
+                        var m = Math.floor((rem_ms % 3600000) / 60000);
+                        var s = Math.floor((rem_ms % 60000) / 1000);
+                        document.getElementById('heat_remaining_val').innerText = h.toString().padStart(2,'0') + ':' + m.toString().padStart(2,'0') + ':' + s.toString().padStart(2,'0');
+                        remEl.style.display = 'block';
+                    } else {
+                        remEl.style.display = 'none';
+                    }
+
+                    var h = document.getElementById('heater_status');
+                    h.innerText = currentData.heater_on ? 'ON' : 'OFF';
+                    h.className = currentData.heater_on ? 'data status-on' : 'data status-off';
+                    var e = document.getElementById('enable_status');
+                    e.innerText = currentData.is_enabled ? 'ENABLED' : 'DISABLED';
+                    e.className = currentData.is_enabled ? 'data status-on' : 'data status-off';
+                    var p = document.getElementById('process_status');
+                    p.innerText = currentData.process_state;
+
+                    // Update active state for mode buttons
+                    // This is now based on the selected mode, not the current process state
+                    var sm = currentData.selected_mode;
+                    document.getElementById('btn-mode-dry').className = (sm == 0) ? 'active' : '';
+                    document.getElementById('btn-mode-heat').className = (sm == 1) ? 'active' : '';
+                    document.getElementById('btn-mode-warm').className = (sm == 2) ? 'active' : '';
+
+                    // Also update the dropdown to match, for consistency
+                    var modeDropdown = document.getElementById('mode_select');
+                    if (modeDropdown.value != sm) {
+                        modeDropdown.value = sm;
+                    }
+
+                    // Update active state for heat action buttons
+                    document.getElementById('btn-action-stop').className = (currentData.heat_action === 'Stop') ? 'active' : '';
+                    document.getElementById('btn-action-warm').className = (currentData.heat_action === 'Warm') ? 'active' : '';
+
+                    // --- UI Visibility Logic ---
+                    const heatingTempItem = document.getElementById('heating_temp_item');
+                    const warmingTempItem = document.getElementById('warming_temp_item');
+                    const heatDurationItem = document.getElementById('heat_duration_item');
+                    const heatActionItem = document.getElementById('heat_action_item');
+                    const humidityGroup = document.getElementById('humidity_group');
+
+                    if (sm == 0) { // DRY Mode
+                        heatingTempItem.classList.remove('hidden-by-mode');
+                        warmingTempItem.classList.remove('hidden-by-mode');
+                        humidityGroup.classList.remove('hidden-by-mode');
+                        heatDurationItem.classList.add('hidden-by-mode');
+                        heatActionItem.classList.add('hidden-by-mode');
+                    } else if (sm == 1) { // HEAT Mode
+                        // In HEAT mode, Warming Temp is only relevant if the action is 'Warm'
+                        if (currentData.heat_action === 'Warm') {
+                            warmingTempItem.classList.remove('hidden-by-mode');
+                        } else {
+                            warmingTempItem.classList.add('hidden-by-mode');
+                        }
+                        heatDurationItem.classList.remove('hidden-by-mode');
+                        heatActionItem.classList.remove('hidden-by-mode');
+                        humidityGroup.classList.add('hidden-by-mode');
+                    } else if (sm == 2) { // WARM Mode
+                        warmingTempItem.classList.remove('hidden-by-mode');
+                        heatingTempItem.classList.add('hidden-by-mode');
+                        heatDurationItem.classList.add('hidden-by-mode');
+                        heatActionItem.classList.add('hidden-by-mode');
+                        humidityGroup.classList.add('hidden-by-mode');
+                    }
+
+
+                }
+            };
+            x.open('GET', '/readings', true);
+            x.send();
+        }
+        function postData(endpoint, params) {
+            var x = new XMLHttpRequest();
+            x.open('POST', endpoint, true);
+            x.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+            x.onreadystatechange = function () { if (this.readyState == 4 && this.status == 200) { fetchData(); } };
+            x.send(params);
+        }
+        function startEdit(element, editType) {
+            if (document.querySelector('.edit-in-place')) return; // Prevent multiple edits at once
+
+            const originalValue = parseFloat(element.innerText);
+            element.style.display = 'none';
+
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'edit-in-place';
+            input.value = originalValue;
+            input.step = (editType === 'stallDelta' || editType === 'humHyst' || editType === 'heatDuration') ? '0.1' : '1';
+
+            const finishEdit = (save) => {
+                if (save) {
+                    const newValue = input.value;
+                    if (newValue !== '' && parseFloat(newValue) !== originalValue) {
+                        let valueToSend = newValue;
+                        let endpoint = '';
+                        if (editType === 'stallInterval') { endpoint = '/setstallinterval'; valueToSend = newValue * 60000; }
+                        else if (editType === 'heatDuration') { endpoint = '/setheatduration'; valueToSend = newValue; }
+                        else if (editType === 'dryingTemp') { endpoint = '/setdryingtemp'; }
+                        else if (editType === 'warmTemp') { endpoint = '/setwarmtemp'; }
+                        else if (editType === 'humSetpoint') { endpoint = '/setpointhum'; }
+                        else if (editType === 'humHyst') { endpoint = '/sethumhyst'; }
+                        else if (editType === 'stallDelta') { endpoint = '/setstalldelta'; }
+                        postData(endpoint, 'value=' + valueToSend);
+                    }
+                }
+                input.remove();
+                element.style.display = 'block';
+            };
+
+            input.addEventListener('blur', () => finishEdit(true));
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') finishEdit(true);
+                if (e.key === 'Escape') finishEdit(false);
+            });
+
+            element.parentNode.insertBefore(input, element.nextSibling);
+            input.focus();
+            input.select();
+        }
+        function showHelp(text) {
+            document.getElementById('help-content').innerText = text;
+            document.getElementById('help-overlay').style.display = 'flex';
+        }
+        function hideHelp() {
+            document.getElementById('help-overlay').style.display = 'none';
+        }
+        function setHeatAction(action) { postData('/setheataction', 'action=' + action); }
+        function toggleEnable() { postData('/toggle_enable', ''); }
+        function setMode(mode) { postData('/setmode', 'mode=' + mode); }
+        setInterval(fetchData, 2000);
+        window.onload = fetchData;
+    </script>
+</head>
+<body>
+    <h1>Filament Dryer Control</h1>
+    <div class="group-box" style="max-width: 400px; margin: 20px auto; position: relative;">
+        <span class='help-icon' onclick="showHelp('Dry: Heats to the target temp until the target humidity is reached.\n\nHeat: Heats to the target temp for a fixed duration.\n\nWarm: Heats to a lower temp to maintain warmth indefinitely.')">i</span>
+        <div class='mode-selector button-group' style="display: flex; align-items: center; justify-content: center;">
+            <span class='label' style="margin-right: 10px;">Mode:</span>
+            <button id='btn-mode-dry' onclick='setMode(0)'>Dry</button>
+            <button id='btn-mode-heat' onclick='setMode(1)'>Heat</button>
+            <button id='btn-mode-warm' onclick='setMode(2)'>Warm</button>
+            <!-- Hidden dropdown for state management -->
+            <select id='mode_select' onchange='setMode(this.value)' style='display:none;'><option value='0'>Dry</option><option value='1'>Heat</option><option value='2'>Warm</option></select>
+        </div>
+    </div>
+
+    <div class="grid-container" style="grid-template-columns: 1fr 1fr; max-width: 400px;">
+        <div class='grid-item sensor-value temp-value'>
+            <span class='help-icon' onclick="showHelp('Current measured temperature inside the dryer.')">i</span>
+            <div class='label'>Temperature</div>
+            <div id='temp_val' class='data'>--.- &deg;C</div>
+        </div>
+        <div class='grid-item sensor-value hum-value'>
+            <span class='help-icon' onclick="showHelp('Current measured relative humidity inside the dryer.')">i</span>
+            <div class='label'>Humidity</div>
+            <div id='hum_val' class='data'>--.- %</div>
+        </div>
+    </div>
+
+    <div class='grid-container' style='margin-top:20px;'>
+        <div class='grid-item temp-value'>
+            <span class='help-icon' onclick="showHelp('Actual current state of the heater relay.')">i</span>
+            <div class='label'>Heater Status</div>
+            <div id='heater_status' class='data status-off'>OFF</div>
+        </div>
+        <div class='grid-item control-box' style='grid-column: span 2;'>
+            <span class='help-icon' onclick="showHelp('Master switch to enable or disable the entire drying process. Click the status text to toggle.')">i</span>
+            <div class='label'>Process Control</div>
+            <div id='enable_status' class='data status-off' onclick="toggleEnable()">DISABLED</div>
+        </div>
+    </div>
+    
+    <div class="group-box" style="max-width: 400px; margin: 20px auto; position: relative;">
+        <span class='help-icon' onclick="showHelp('Current operational state of the controller, showing the selected mode and current status.')">i</span>
+        <div class='label'>Process State</div>
+        <div id='process_status' class='data'>IDLE</div>
+    </div>
+
+    <div class="group-box temp-group">
+        <h3>Dry | Heat | Warm: Temperature Settings<span class='help-icon' onclick="showHelp('Settings related to temperature control for all modes.')">i</span></h3>
+        <div class='grid-container'>
+            <div id='heating_temp_item' class='grid-item temp-value'>
+                <span class='help-icon' onclick="showHelp('Target temperature for the DRY and HEAT modes.')">i</span>
+                <div class='label'>Heating Temp Setpoint</div>
+            <div id='drying_temp_val' class='data' onclick="startEdit(this, 'dryingTemp')">--.- &deg;C</div>
+            </div>
+            <div id='warming_temp_item' class='grid-item temp-value'>
+                <span class='help-icon' onclick="showHelp('Target temperature for the WARM mode, or after DRY mode completes.')">i</span>
+                <div class='label'>Warming Temp Setpoint</div>
+            <div id='warm_temp_val' class='data' onclick="startEdit(this, 'warmTemp')">--.- &deg;C</div>
+            </div>
+            <!-- This grid item now contains both duration and remaining time to stack them -->
+            <div id='heat_duration_item' class='grid-item temp-value' style="padding-bottom: 5px;">
+                <span class='help-icon' onclick="showHelp('Duration for the timed HEAT mode and its real-time countdown.')">i</span>
+                <div>
+                    <div class='label'>Heat Duration</div>
+                <div id='heat_duration_val' class='data' onclick="startEdit(this, 'heatDuration')">-- hours</div>
+                </div>
+                <div id='heat_rem_item' style='display: none; margin-top: 10px;'>
+                    <div class='label'>Heat Time Remaining</div>
+                    <div id='heat_remaining_val' class='data'>--:--:--</div>
+                </div>
+            </div>
+            <div id='heat_action_item' class='grid-item temp-value' style='grid-column: span 2;'>
+                <span class='help-icon' onclick="showHelp('Action to take after HEAT mode timer expires.')">i</span>
+                <div class='label'>Heat Completion Action</div>
+                <div id='heat_action_val' class='button-group'>
+                    <button id='btn-action-stop' onclick='setHeatAction(0)'>Stop</button>
+                    <button id='btn-action-warm' onclick='setHeatAction(1)'>Warm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="humidity_group" class="group-box hum-group">
+        <h3>Dry: Humidity Settings<span class='help-icon' onclick="showHelp('Settings related to humidity control, used only in DRY mode.')">i</span></h3>
+        <div class='grid-container'>
+            <div class='grid-item hum-value'>
+                <span class='help-icon' onclick="showHelp('Target humidity for DRY mode. The process ends when humidity drops below this value.')">i</span>
+                <div class='label'>Hum Setpoint</div>
+                <div id='hum_set_val' class='data' onclick="startEdit(this, 'humSetpoint')">--.- %</div>
+            </div>
+            <div class='grid-item hum-value'>
+                <span class='help-icon' onclick="showHelp('Allowed humidity increase before re-engaging DRYING from a WARM state.')">i</span>
+                <div class='label'>Hum Hysteresis</div>
+                <div id='hum_hyst_val' class='data' onclick="startEdit(this, 'humHyst')">--.- %</div>
+            </div>
+            <div class='grid-item hum-value'>
+                <span class='help-icon' onclick="showHelp('Time period to check for progress during DRY mode. If humidity does not drop enough in this interval, the process is stalled.')">i</span>
+                <div class='label'>Stall Interval</div>
+                <div id='stall_interval_val' class='data' onclick="startEdit(this, 'stallInterval')">-- min</div>
+            </div>
+            <div class='grid-item hum-value' style='grid-column: span 3;'>
+                <span class='help-icon' onclick="showHelp('The minimum humidity drop required during the Stall Interval to continue DRY mode.')">i</span>
+                <div class='label'>Stall Delta</div>
+                <div id='stall_delta_val' class='data' onclick="startEdit(this, 'stallDelta')">--.- %</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reusable Help Overlay -->
+    <div id="help-overlay" class="help-overlay" onclick="hideHelp()">
+        <div class="help-box" onclick="event.stopPropagation()">
+            <span class="help-close" onclick="hideHelp()">&times;</span>
+            <p id="help-content"></p>
+        </div>
+    </div>
+</body>
+</html>

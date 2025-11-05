@@ -5,6 +5,7 @@
 #include "Adafruit_SHT31.h"
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include "SPIFFS.h"
 
 /* LVGL Globals */
 TFT_eSPI tft = TFT_eSPI();
@@ -30,38 +31,56 @@ AsyncWebServer server(80);
 
 
 /* Settings & State */
-float setpointTemperature = 50.0;
+float dryingTemperature = 50.0;
 float setpointHumidity = 30.0;
-float maintenanceTemperature = 35.0;
+float warmTemperature = 35.0;
 float humidityHysteresis = 5.0; // %RH to allow humidity to rise before re-engaging drying
 float effectiveSetpointHumidity = 30.0; // The dynamically adjusted humidity target
 uint32_t stallCheckInterval = 1800000; // 30 minutes in milliseconds
 float stallHumidityDelta = 0.5; // Minimum %RH drop required over the interval to not be considered stalled
+uint32_t heatDuration = 240 * 60000; // 4 hours in milliseconds
+uint32_t heatStartTime = 0;
 
 uint32_t lastStallCheckTime = 0;
 float humidityAtLastStallCheck = 0;
 
-enum ProcessState {
-  IDLE,
-  DRYING,
-  MAINTAINING
+enum State {
+  STATE_IDLE,
+  STATE_DRYING,
+  STATE_HEATING,
+  STATE_WARMING
 };
-enum ControlMode {
-  HUMIDITY_MODE,
-  TEMP_ONLY_MODE
+enum Mode {
+  MODE_DRY,
+  MODE_HEAT,
+  MODE_WARM
 };
-ControlMode currentControlMode = HUMIDITY_MODE; // Default to smart humidity control
-ProcessState currentProcessState = IDLE;
+enum HeatCompletionAction {
+  ACTION_STOP,
+  ACTION_WARM
+};
+enum TransitionReason {
+  REASON_NONE,
+  REASON_USER_ACTION,
+  REASON_TARGET_MET,
+  REASON_STALLED,
+  REASON_TIMER_EXPIRED,
+  REASON_HYSTERESIS
+};
+State currentState = STATE_IDLE;
+Mode selectedMode = MODE_DRY; // Default to Dry mode
+HeatCompletionAction heatCompletionAction = ACTION_STOP;
+TransitionReason lastTransitionReason = REASON_NONE;
 bool isHeaterEnabled = false; // Master switch for the heating process, OFF by default for safety
 
 /* UI Object Globals */
+String currentStatusString = "IDLE";
 lv_obj_t * temp_label_value;
 lv_obj_t * hum_label_value;
 lv_obj_t * message_label;
 lv_obj_t * setpoint_label_value;
 lv_obj_t * heater_status_label;
-lv_obj_t * process_status_label;
-lv_obj_t * control_mode_label;
+lv_obj_t * state_label;
 lv_obj_t * hum_setpoint_label_value;
 static lv_style_t style_error;
 
@@ -71,7 +90,6 @@ void setupWiFi();
 void setupWebServer();
 void setupHardwarePins();
 void ui_init();
-void update_control_mode_display();
 void update_humidity_setpoint_display();
 void update_setpoint_display();
 void update_process_status_display();
@@ -97,6 +115,11 @@ void setup() {
   // --- LVGL Initialization ---
   lv_init();
 
+  // --- Initialize SPIFFS ---
+  if(!SPIFFS.begin(true)){
+    update_message_box("SPIFFS Mount Failed!");
+    return;
+  }
   lv_disp_draw_buf_init(&draw_buf, buf, NULL, screenWidth * 10);
 
   /*Initialize the display*/
@@ -167,18 +190,7 @@ void setupWiFi() {
 void setupWebServer() {
   // Route for the main web page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    String html = R"rawliteral(<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'><title>Filament Dryer</title><style>body{font-family:Arial,sans-serif;text-align:center;margin:20px;}h1{color:#333;}.grid-container{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;max-width:600px;margin:auto;}.grid-item{background-color:#f2f2f2;padding:15px;border-radius:8px;}.data{font-size:1.5em;font-weight:bold;}.label{font-size:0.9em;color:#555;cursor:pointer;}.edit-btn{cursor:pointer;font-size:1em;margin-left:10px;}.status-on{color:red;}.status-off{color:grey;}</style><script>let currentData={};function fetchData(){var x=new XMLHttpRequest();x.onreadystatechange=function(){if(this.readyState==4&&this.status==200){currentData=JSON.parse(this.responseText);document.getElementById('temp_val').innerHTML=currentData.temperature+' &deg;C';document.getElementById('hum_val').innerHTML=currentData.humidity+' %';document.getElementById('temp_set_val').innerHTML=currentData.setpoint+' &deg;C';document.getElementById('hum_set_val').innerHTML=currentData.setpoint_hum+' %';document.getElementById('maint_temp_val').innerHTML=currentData.maint_temp+' &deg;C';document.getElementById('hum_hyst_val').innerHTML=currentData.hum_hyst+' %';document.getElementById('stall_interval_val').innerHTML=currentData.stall_interval/60000+' min';document.getElementById('stall_delta_val').innerHTML=currentData.stall_delta+' %';var h=document.getElementById('heater_status');h.innerHTML=currentData.heater_on?'ON':'OFF';h.className=currentData.heater_on?'data status-on':'data status-off';var e=document.getElementById('enable_status');e.innerHTML=currentData.is_enabled?'ENABLED':'DISABLED';e.className=currentData.is_enabled?'data status-on':'data status-off';var p=document.getElementById('process_status');p.innerHTML=currentData.process_state;var cm=document.getElementById('control_mode');cm.innerHTML=currentData.control_mode;}};x.open('GET','/readings',true);x.send();}
-function postData(endpoint,params){var x=new XMLHttpRequest();x.open('POST',endpoint,true);x.setRequestHeader('Content-type','application/x-www-form-urlencoded');x.onreadystatechange=function(){if(this.readyState==4&&this.status==200){fetchData();}};x.send(params);}
-function editTemp(){var v=prompt('Enter new Drying Temp setpoint:',currentData.setpoint);if(v!=null&&v!=='')postData('/setpoint','value='+v);}
-function editHum(){var v=prompt('Enter new Humidity setpoint:',currentData.setpoint_hum);if(v!=null&&v!=='')postData('/setpointhum','value='+v);}
-function editMaintTemp(){var v=prompt('Enter new Maintenance Temp setpoint:',currentData.maint_temp);if(v!=null&&v!=='')postData('/setpointmaint','value='+v);}
-function editHumHyst(){var v=prompt('Enter new Humidity Hysteresis (%):',currentData.hum_hyst);if(v!=null&&v!=='')postData('/sethumhyst','value='+v);}
-function editStallInterval(){var v=prompt('Enter new Stall Interval (minutes):',currentData.stall_interval/60000);if(v!=null&&v!=='')postData('/setstallinterval','value='+v*60000);}
-function editStallDelta(){var v=prompt('Enter new Stall Delta (%):',currentData.stall_delta);if(v!=null&&v!=='')postData('/setstalldelta','value='+v);}
-function toggleEnable(){postData('/toggle_enable','');}
-function setMode(mode){postData('/setmode','mode='+mode);}
-setInterval(fetchData,2000);window.onload=fetchData;</script></head><body><h1>Filament Dryer Control</h1><div class='grid-container'><div class='grid-item'><div class='label' onclick="alert('Current measured temperature inside the dryer.')">Temperature</div><div id='temp_val' class='data'>--.- &deg;C</div></div><div class='grid-item'><div class='label' onclick="alert('Target temperature during the main DRYING phase.')">Drying Temp</div><div id='temp_set_val' class='data'>--.- &deg;C</div><span class='edit-btn' onclick='editTemp()'>&#9998;</span></div><div class='grid-item'><div class='label' onclick="alert('Lower target temperature for the MAINTAINING phase after drying is complete.')">Maint. Temp</div><div id='maint_temp_val' class='data'>--.- &deg;C</div><span class='edit-btn' onclick='editMaintTemp()'>&#9998;</span></div><div class='grid-item'><div class='label' onclick="alert('Current measured relative humidity inside the dryer.')">Humidity</div><div id='hum_val' class='data'>--.- %</div></div><div class='grid-item'><div class='label' onclick="alert('Target humidity. The DRYING phase ends when humidity drops below this value.')">Hum Setpoint</div><div id='hum_set_val' class='data'>--.- %</div><span class='edit-btn' onclick='editHum()'>&#9998;</span></div><div class='grid-item'><div class='label' onclick="alert('Allowed humidity increase before re-engaging the DRYING phase from MAINTAINING.')">Hum Hysteresis</div><div id='hum_hyst_val' class='data'>--.- %</div><span class='edit-btn' onclick='editHumHyst()'>&#9998;</span></div><div class='grid-item'><div class='label' onclick="alert('Time period to check for drying progress. If humidity does not drop enough in this interval, the process is stalled.')">Stall Interval</div><div id='stall_interval_val' class='data'>-- min</div><span class='edit-btn' onclick='editStallInterval()'>&#9998;</span></div><div class='grid-item'><div class='label' onclick="alert('The minimum humidity drop required during the Stall Interval to continue the DRYING phase.')">Stall Delta</div><div id='stall_delta_val' class='data'>--.- %</div><span class='edit-btn' onclick='editStallDelta()'>&#9998;</span></div><div class='grid-item'><div class='label' onclick="alert('Selects the control logic. HUMIDITY: Smart mode with drying and maintaining phases. TEMP ONLY: Simple mode to hold the Drying Temp.')">Control Mode</div><div id='control_mode' class='data'>HUMIDITY</div><select onchange='setMode(this.value)'><option value='0'>Humidity</option><option value='1'>Temp Only</option></select></div></div><div class='grid-container' style='margin-top:20px;'><div class='grid-item'><div class='label' onclick="alert('Actual current state of the heater relay.')">Heater Status</div><div id='heater_status' class='data status-off'>OFF</div></div><div class='grid-item' style='grid-column: span 2;'><div class='label' onclick="alert('Master switch to enable or disable the entire drying process.')">Process Control</div><div id='enable_status' class='data status-off'>DISABLED</div><button onclick='toggleEnable()'>Toggle</button></div></div><div class='grid-item' style='grid-column: span 3;'><div class='label' onclick="alert('Current phase of the drying process: IDLE, DRYING, or MAINTAINING.')">Process State</div><div id='process_status' class='data'>IDLE</div></div></body></html>)rawliteral";
-    request->send(200, "text/html", html);
+    request->send(SPIFFS, "/index.html", "text/html");
   });
 
   // Route for sensor readings (JSON endpoint)
@@ -188,33 +200,41 @@ setInterval(fetchData,2000);window.onload=fetchData;</script></head><body><h1>Fi
     json += String(currentTemperature, 1); // Format to 1 decimal place
     json += ",\"humidity\":";
     json += String(currentHumidity, 1); // Format to 1 decimal place
-    json += ",\"setpoint\":";
-    json += String(setpointTemperature, 1);
+    json += ",\"drying_temp\":";
+    json += String(dryingTemperature, 1);
     json += ",\"setpoint_hum\":";
     json += String(setpointHumidity, 1);
-    json += ",\"maint_temp\":";
-    json += String(maintenanceTemperature, 1);
-    json += ",\"process_state\":\"" + String(currentProcessState == IDLE ? "IDLE" : (currentProcessState == DRYING ? "DRYING" : "MAINTAINING")) + "\"";
+    json += ",\"warm_temp\":";
+    json += String(warmTemperature, 1);
+    json += ",\"process_state\":\"" + currentStatusString + "\"";
     json += ",\"heater_on\":";
     json += isHeaterOn ? "true" : "false";
     json += ",\"is_enabled\":";
     json += isHeaterEnabled ? "true" : "false";
-    json += ",\"control_mode\":\"" + String(currentControlMode == HUMIDITY_MODE ? "HUMIDITY" : "TEMP ONLY") + "\"";
     json += ",\"hum_hyst\":";
     json += String(humidityHysteresis, 1);
+    json += ",\"selected_mode\":";
+    json += String(selectedMode);
     json += ",\"stall_interval\":";
     json += String(stallCheckInterval);
     json += ",\"stall_delta\":";
     json += String(stallHumidityDelta, 1);
+    json += ",\"heat_duration\":";
+    json += String(heatDuration);
+    json += ",\"heat_remaining\":";
+    long remaining = 0;
+    if (currentState == STATE_HEATING && isHeaterEnabled) remaining = heatDuration - (millis() - heatStartTime);
+    json += String(remaining > 0 ? remaining : 0);
+    json += ",\"heat_action\":\"" + String(heatCompletionAction == ACTION_STOP ? "Stop" : "Warm") + "\"";
     json += "}";
     request->send(200, "application/json", json);
   });
 
   // Route to set the temperature setpoint
-  server.on("/setpoint", HTTP_POST, [](AsyncWebServerRequest *request){
+  server.on("/setdryingtemp", HTTP_POST, [](AsyncWebServerRequest *request){
     if (request->hasParam("value", true)) { // "true" means it's a POST parameter
       String value = request->getParam("value", true)->value();
-      setpointTemperature = value.toFloat();
+      dryingTemperature = value.toFloat();
       update_setpoint_display(); // Update the LVGL display immediately
       request->send(200, "text/plain", "OK");
     } else {
@@ -235,10 +255,10 @@ setInterval(fetchData,2000);window.onload=fetchData;</script></head><body><h1>Fi
   });
 
   // Route to set the maintenance temperature setpoint
-  server.on("/setpointmaint", HTTP_POST, [](AsyncWebServerRequest *request){
+  server.on("/setwarmtemp", HTTP_POST, [](AsyncWebServerRequest *request){
     if (request->hasParam("value", true)) {
       String value = request->getParam("value", true)->value();
-      maintenanceTemperature = value.toFloat();
+      warmTemperature = value.toFloat();
       request->send(200, "text/plain", "OK");
     } else {
       request->send(400, "text/plain", "Bad Request");
@@ -282,9 +302,53 @@ setInterval(fetchData,2000);window.onload=fetchData;</script></head><body><h1>Fi
   server.on("/setmode", HTTP_POST, [](AsyncWebServerRequest *request){
     if (request->hasParam("mode", true)) {
       int mode = request->getParam("mode", true)->value().toInt();
-      if (mode == 0) currentControlMode = HUMIDITY_MODE;
-      else if (mode == 1) currentControlMode = TEMP_ONLY_MODE;
-      update_control_mode_display();
+      if (mode >= 0 && mode <= 2) {
+        selectedMode = (Mode)mode;
+
+        // If the process is already running, force an immediate state change.
+        if (isHeaterEnabled) {
+          switch(selectedMode) {
+            case MODE_DRY:
+              currentState = STATE_DRYING;
+              // Reset stall detection on mode change
+              lastStallCheckTime = millis();
+              humidityAtLastStallCheck = currentHumidity;
+              lastTransitionReason = REASON_USER_ACTION;
+              break;
+            case MODE_HEAT:
+              currentState = STATE_HEATING;
+              heatStartTime = millis(); // Restart the heat timer
+              break;
+            case MODE_WARM:
+              currentState = STATE_WARMING;
+              lastTransitionReason = REASON_USER_ACTION;
+              break;
+          }
+        }
+      }
+      request->send(200, "text/plain", "OK");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  // Route to set the heat duration
+  server.on("/setheatduration", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("value", true)) {
+      float hours = request->getParam("value", true)->value().toFloat();
+      heatDuration = hours * 3600000; // Convert hours to milliseconds
+      request->send(200, "text/plain", "OK");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  // Route to set the heat completion action
+  server.on("/setheataction", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("action", true)) {
+      int action = request->getParam("action", true)->value().toInt();
+      if (action == 0) heatCompletionAction = ACTION_STOP;
+      else if (action == 1) heatCompletionAction = ACTION_WARM;
       request->send(200, "text/plain", "OK");
     } else {
       request->send(400, "text/plain", "Bad Request");
@@ -294,6 +358,7 @@ setInterval(fetchData,2000);window.onload=fetchData;</script></head><body><h1>Fi
   // Route to toggle the master enable state
   server.on("/toggle_enable", HTTP_POST, [](AsyncWebServerRequest *request){
     isHeaterEnabled = !isHeaterEnabled;
+    lastTransitionReason = REASON_USER_ACTION;
     request->send(200, "text/plain", "OK");
   });
 
@@ -391,20 +456,13 @@ void ui_init() {
   lv_obj_align(heater_status_label, LV_ALIGN_TOP_LEFT, col2_x, 165);
   update_heater_status_display();
 
-  // --- Process Status Display ---
-  process_status_label = lv_label_create(lv_scr_act());
-  lv_obj_add_style(process_status_label, &style_setpoint, 0); // Use cyan style
-  lv_obj_set_width(process_status_label, 120);
-  lv_obj_set_style_text_align(process_status_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(process_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -35);
+  // --- State Display ---
+  state_label = lv_label_create(lv_scr_act());
+  lv_obj_add_style(state_label, &style_setpoint, 0); // Use cyan style
+  lv_obj_set_width(state_label, 300);
+  lv_obj_set_style_text_align(state_label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(state_label, LV_ALIGN_BOTTOM_MID, 0, -35);
   update_process_status_display();
-
-  control_mode_label = lv_label_create(lv_scr_act());
-  lv_obj_add_style(control_mode_label, &style_setpoint_hum, 0); // Use magenta style
-  lv_obj_set_width(control_mode_label, 120);
-  lv_obj_set_style_text_align(control_mode_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(control_mode_label, LV_ALIGN_BOTTOM_RIGHT, -10, -35);
-  update_control_mode_display();
 
   // --- Message Box ---
   message_label = lv_label_create(lv_scr_act());
@@ -423,7 +481,7 @@ void ui_init() {
 
 void update_setpoint_display() {
   char setpointStr[8];
-  dtostrf(setpointTemperature, 4, 1, setpointStr);
+  dtostrf(dryingTemperature, 4, 1, setpointStr);
   lv_label_set_text_fmt(setpoint_label_value, "%s C", setpointStr);
 }
 
@@ -431,14 +489,6 @@ void update_humidity_setpoint_display() {
   char setpointStr[8];
   dtostrf(setpointHumidity, 4, 1, setpointStr);
   lv_label_set_text_fmt(hum_setpoint_label_value, "%s %%", setpointStr);
-}
-
-void update_control_mode_display() {
-  if (currentControlMode == HUMIDITY_MODE) {
-    lv_label_set_text(control_mode_label, "Humidity");
-  } else {
-    lv_label_set_text(control_mode_label, "Temp Only");
-  }
 }
 
 void update_heater_status_display() {
@@ -452,17 +502,8 @@ void update_heater_status_display() {
 }
 
 void update_process_status_display() {
-  switch (currentProcessState) {
-    case IDLE:
-      lv_label_set_text(process_status_label, "IDLE");
-      break;
-    case DRYING:
-      lv_label_set_text(process_status_label, "DRYING");
-      break;
-    case MAINTAINING:
-      lv_label_set_text(process_status_label, "MAINTAINING");
-      break;
-  }
+  // This function now just updates the LVGL label with the global status string
+  lv_label_set_text(state_label, currentStatusString.c_str());
 }
 
 void update_message_box(const char* message) {
@@ -506,51 +547,114 @@ void update_sensor_task(lv_timer_t * timer) {
 
 void controlHeaterTask(lv_timer_t * timer) {
   // --- Process State Machine ---
-  ProcessState previousProcessState = currentProcessState;
+  State previousState = currentState;
 
   if (!isHeaterEnabled) {
-    currentProcessState = IDLE;
+    currentState = STATE_IDLE;
+    if (previousState != STATE_IDLE) lastTransitionReason = REASON_USER_ACTION;
   } else {
     // If enabled, decide whether to start or continue a process
-    if (currentProcessState == IDLE) {
-      // When starting, reset stall detection timer
-      lastStallCheckTime = millis();
-      humidityAtLastStallCheck = currentHumidity;
-      effectiveSetpointHumidity = setpointHumidity; // Reset to the user-defined target
-      currentProcessState = DRYING;
+    if (currentState == STATE_IDLE) {
+      Serial.println("Transitioning from IDLE");
+      char msgBuffer[50];
+      sprintf(msgBuffer, "Mode: %d", selectedMode);
+      update_message_box(msgBuffer);
+      
+      // Transition to the user's selected mode and perform initial setup
+      if (selectedMode == MODE_DRY) {
+        currentState = STATE_DRYING;
+        lastStallCheckTime = millis();
+        humidityAtLastStallCheck = currentHumidity;
+        effectiveSetpointHumidity = setpointHumidity;
+        lastTransitionReason = REASON_USER_ACTION;
+      }
+      else if (selectedMode == MODE_HEAT) {
+        currentState = STATE_HEATING;
+        heatStartTime = millis(); // Start the timer
+        lastTransitionReason = REASON_USER_ACTION;
+      }
+      else if (selectedMode == MODE_WARM) {
+        currentState = STATE_WARMING;
+        lastTransitionReason = REASON_USER_ACTION;
+      }
     }
     
-    if (currentControlMode == HUMIDITY_MODE) {
-      if (currentProcessState == DRYING) {
-        // Check for normal completion
-        if (currentHumidity <= effectiveSetpointHumidity && currentHumidity > 0) {
-          update_message_box("Humidity setpoint reached.");
-          currentProcessState = MAINTAINING;
-        // Check for stall condition
-        } else if (millis() - lastStallCheckTime > stallCheckInterval) {
-          if ((humidityAtLastStallCheck - currentHumidity) < stallHumidityDelta) {
-            update_message_box("Stall detected, switching to maintain.");
-            currentProcessState = MAINTAINING;
-            effectiveSetpointHumidity = currentHumidity; // The stall point becomes the new effective setpoint
-          } else {
-            // Not stalled, reset timer and snapshot
-            lastStallCheckTime = millis();
-            humidityAtLastStallCheck = currentHumidity;
-          }
+    // --- State Transition Logic ---
+    if (currentState == STATE_DRYING) {
+      // Check for completion by humidity target
+      if (currentHumidity <= effectiveSetpointHumidity && currentHumidity > 0) {
+        update_message_box("Dry point reached. Switching to Warm.");
+        lastTransitionReason = REASON_TARGET_MET;
+        currentState = STATE_WARMING;
+      } 
+      // Check for stall condition
+      else if (millis() - lastStallCheckTime > stallCheckInterval) {
+        if ((humidityAtLastStallCheck - currentHumidity) < stallHumidityDelta) {
+          update_message_box("Stall detected. Switching to Warm.");
+          lastTransitionReason = REASON_STALLED;
+          currentState = STATE_WARMING;
+          effectiveSetpointHumidity = currentHumidity; // The stall point becomes the new effective setpoint
+        } else {
+          lastStallCheckTime = millis();
+          humidityAtLastStallCheck = currentHumidity;
         }
-      } else if (currentProcessState == MAINTAINING && currentHumidity > (effectiveSetpointHumidity + humidityHysteresis)) {
-        update_message_box("Humidity rose, re-engaging drying.");
-        currentProcessState = DRYING;
+      }
+    } else if (currentState == STATE_WARMING) {
+      // Check if humidity has crept up, but only if the previous state was DRYING
+      if (previousState == STATE_DRYING && currentHumidity > (effectiveSetpointHumidity + humidityHysteresis)) {
+        update_message_box("Humidity rose. Re-engaging Dry mode.");
+        lastTransitionReason = REASON_HYSTERESIS;
+        currentState = STATE_DRYING;
+      }
+    } else if (currentState == STATE_HEATING) {
+      // Check for timer completion
+      if (millis() - heatStartTime > heatDuration) {
+        if (heatCompletionAction == ACTION_STOP) {
+          update_message_box("Heat timer finished. Stopping.");
+          lastTransitionReason = REASON_TIMER_EXPIRED;
+          isHeaterEnabled = false; // This will force state to IDLE
+          currentState = STATE_IDLE;
+        } else { // ACTION_WARM
+          update_message_box("Heat timer finished. Switching to Warm.");
+          lastTransitionReason = REASON_TIMER_EXPIRED;
+          currentState = STATE_WARMING;
+        }
       }
     }
   }
 
-  // Update the display if the state changed
-  if (previousProcessState != currentProcessState) {
-    // If we just started, give a clear message
-    if (previousProcessState == IDLE && currentProcessState == DRYING) {
-      update_message_box("Drying process started.");
+  // --- Construct Status String ---
+  if (currentState == STATE_IDLE) {
+    if (previousState == STATE_HEATING && lastTransitionReason == REASON_TIMER_EXPIRED) {
+      currentStatusString = "IDLE (Heat Stopped)";
+    } else {
+      currentStatusString = "IDLE";
     }
+  } else if (selectedMode == MODE_DRY) {
+    if (currentState == STATE_DRYING) {
+      if (lastTransitionReason == REASON_HYSTERESIS) {
+        currentStatusString = "Dry / RE-DRYING (Maintaining)";
+      } else {
+        currentStatusString = "Dry / DRYING";
+      }
+    } else if (currentState == STATE_WARMING) {
+      if (lastTransitionReason == REASON_TARGET_MET) {
+        currentStatusString = "Dry / WARMING (Setpoint Reached)";
+      } else if (lastTransitionReason == REASON_STALLED) {
+        currentStatusString = "Dry / WARMING (Stalled)";
+      } else {
+        currentStatusString = "Dry / WARMING"; // Fallback
+      }
+    }
+  } else if (selectedMode == MODE_HEAT) {
+    if (currentState == STATE_HEATING) currentStatusString = "Heat / HEATING";
+    else if (currentState == STATE_WARMING) currentStatusString = "Heat / WARMING (Time Expired)";
+  } else if (selectedMode == MODE_WARM) {
+    currentStatusString = "Warm / WARMING";
+  }
+
+  // Update the display if the state changed
+  if (previousState != currentState) {
     update_process_status_display();
   }
 
@@ -560,18 +664,19 @@ void controlHeaterTask(lv_timer_t * timer) {
   float targetTemp = 0.0;
   bool heatingRequired = false;
 
-  if (currentProcessState == DRYING) { // This state is used by both modes
-    targetTemp = setpointTemperature;
-    if (currentControlMode == HUMIDITY_MODE) {
-      heatingRequired = (currentHumidity > effectiveSetpointHumidity);
-    } else { // TEMP_ONLY_MODE
+  switch(currentState) {
+    case STATE_DRYING:
+    case STATE_HEATING:
+      targetTemp = dryingTemperature;
       heatingRequired = true;
-    }
-  } else if (currentProcessState == MAINTAINING) { // This state is only used by HUMIDITY_MODE
-    targetTemp = maintenanceTemperature;
-    heatingRequired = true; // In maintenance, we always want to hold the temp.
-  } else { // State is IDLE
-    heatingRequired = false;
+      break;
+    case STATE_WARMING:
+      targetTemp = warmTemperature;
+      heatingRequired = true;
+      break;
+    case STATE_IDLE:
+      heatingRequired = false;
+      break;
   }
 
   if (!heatingRequired) {
