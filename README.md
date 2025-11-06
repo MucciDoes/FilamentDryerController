@@ -85,7 +85,6 @@ The web interface (`index.html`) and presets (`presets.json`) are stored on the 
 2.  The ESP32 will connect to your Wi-Fi network. Since the Serial Monitor is disabled by the heater pin, you must **find the device's IP address on the local TFT display**.
 3.  Open a web browser on a device connected to the *same Wi-Fi network* and navigate to the IP address shown on the TFT screen.
 
-## Out-of-Box Setup (For End-Users)
 ## Web Interface (UI) Overview
 
 The web interface provides a comprehensive dashboard for your filament dryer.
