@@ -150,3 +150,5 @@ The logging feature provides real-time data for monitoring and analysis.
 ## License
 
 This project is open-source and licensed under the MIT License. See the `LICENSE` file for details.
+
+More to come.
