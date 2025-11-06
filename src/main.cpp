@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include "SPIFFS.h"
+#include <ArduinoJson.h>
 
 /* LVGL Globals */
 TFT_eSPI tft = TFT_eSPI();
@@ -28,9 +29,41 @@ bool isHeaterOn = false;  // Tracks the actual state of the heater relay
 const char* ssid = "meshMucci2427";
 const char* password = "9275cabfed";
 AsyncWebServer server(80);
+AsyncWebSocket ws("/ws"); // Create a WebSocket object
 
 
 /* Settings & State */
+struct Preset {
+  String name;
+  bool isDefault = false;
+  float dryingTemp;
+  float setpointHum;
+  float warmTemp;
+  float humHyst;
+  uint32_t stallInterval;
+  float stallDelta;
+  uint32_t heatDur;
+  int heatAction;
+  uint32_t logInt;
+  int mode; // 0=Dry, 1=Heat, 2=Warm
+
+  // Default constructor (important for std::vector and other contexts)
+  Preset() : name(""), isDefault(false), dryingTemp(0.0f), setpointHum(0.0f),
+             warmTemp(0.0f), humHyst(0.0f), stallInterval(0U), stallDelta(0.0f),
+             heatDur(0U), heatAction(0), logInt(0U) {}
+
+  // Parameterized constructor for easy initialization
+  Preset(String _name, bool _isDefault, float _dryingTemp, float _setpointHum,
+         float _warmTemp, float _humHyst, uint32_t _stallInterval,
+         float _stallDelta, uint32_t _heatDur, int _heatAction, uint32_t _logInt, int _mode)
+    : name(_name), isDefault(_isDefault), dryingTemp(_dryingTemp), setpointHum(_setpointHum),
+      warmTemp(_warmTemp), humHyst(_humHyst), stallInterval(_stallInterval),
+      stallDelta(_stallDelta), heatDur(_heatDur), heatAction(_heatAction), logInt(_logInt),
+      mode(_mode) {}
+};
+
+std::vector<Preset> presets;
+
 float dryingTemperature = 50.0;
 float setpointHumidity = 30.0;
 float warmTemperature = 35.0;
@@ -73,6 +106,12 @@ HeatCompletionAction heatCompletionAction = ACTION_STOP;
 TransitionReason lastTransitionReason = REASON_NONE;
 bool isHeaterEnabled = false; // Master switch for the heating process, OFF by default for safety
 
+/* Logging State */
+bool isLoggingEnabled = false;
+uint32_t loggingStartTime = 0;
+uint32_t logIntervalMillis = 60000; // Default 1 minute
+uint32_t lastTimedLogTime = 0;
+
 /* UI Object Globals */
 String currentStatusString = "IDLE";
 lv_obj_t * temp_label_value;
@@ -86,11 +125,15 @@ static lv_style_t style_error;
 
 /* Forward Declarations */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
 void setupWiFi();
 void setupWebServer();
 void setupHardwarePins();
 void ui_init();
 void update_humidity_setpoint_display();
+void loadPresets();
+void savePresets();
+void applyPreset(const Preset& preset);
 void update_setpoint_display();
 void update_process_status_display();
 void update_heater_status_display();
@@ -135,6 +178,9 @@ void setup() {
   // This MUST be done before calling functions that update UI elements.
   ui_init();
 
+  // --- Load Presets ---
+  loadPresets();
+
   // --- Hardware Pin Setup ---
   setupHardwarePins();
 
@@ -156,6 +202,115 @@ void setup() {
 void loop() {
   lv_timer_handler(); // let the LVGL timer handler do the work
   delay(5);
+}
+
+void applyPreset(const Preset& preset) {
+  dryingTemperature = preset.dryingTemp;
+  setpointHumidity = preset.setpointHum;
+  warmTemperature = preset.warmTemp;
+  humidityHysteresis = preset.humHyst;
+  stallCheckInterval = preset.stallInterval;
+  stallHumidityDelta = preset.stallDelta;
+  heatDuration = preset.heatDur;
+  heatCompletionAction = (HeatCompletionAction)preset.heatAction;
+  logIntervalMillis = preset.logInt;
+  selectedMode = (Mode)preset.mode; // Apply the mode from the preset
+
+  // Update any relevant UI elements immediately
+  update_setpoint_display();
+  update_humidity_setpoint_display();
+}
+
+void loadPresets() {
+  File file = SPIFFS.open("/presets.json", "r");
+  if (!file || file.size() == 0) {
+    Serial.println("presets.json not found or empty. Creating default presets.");
+    // Create default presets
+    presets.clear();
+    Preset p1("PLA - Generic", true, 50.0f, 30.0f, 35.0f, 5.0f, 30 * 60000U, 0.5f, 4 * 3600000U, 0, 1 * 60000U, 0); // Dry Mode
+    Preset p2("PETG - Strong", false, 65.0f, 15.0f, 40.0f, 3.0f, 60 * 60000U, 0.2f, 8 * 3600000U, 1, 5 * 60000U, 0); // Dry Mode
+    presets.push_back(p1);
+    presets.push_back(p2);
+    savePresets();
+    applyPreset(p1); // Apply the first default
+    return;
+  }
+
+  StaticJsonDocument<4096> doc; // Increased size for more presets
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+
+  if (error) {
+    Serial.println("Failed to parse presets.json");
+    return;
+  }
+
+  JsonArray array = doc.as<JsonArray>();
+  presets.clear();
+  bool defaultLoaded = false;
+  for (JsonObject obj : array) {
+    // If the object is our metadata block, skip it.
+    if (obj.containsKey("_metadata")) continue;
+    Preset p;
+    p.name = obj["name"].as<String>();
+    p.isDefault = obj["isDefault"];
+    p.dryingTemp = obj["dryingTemp"];
+    p.setpointHum = obj["setpointHum"];
+    p.warmTemp = obj["warmTemp"];
+    p.humHyst = obj["humHyst"];
+    p.stallInterval = obj["stallInterval"].as<float>() * 60000; // Convert minutes from JSON to ms
+    p.stallDelta = obj["stallDelta"];
+    p.heatDur = obj["heatDur"].as<float>() * 3600000; // Convert hours from JSON to ms
+    p.heatAction = obj["heatAction"];
+    p.logInt = obj["logInt"].as<float>() * 60000; // Convert minutes from JSON to ms
+    p.mode = obj["mode"];
+    presets.push_back(p);
+
+    if (p.isDefault && !defaultLoaded) {
+      applyPreset(p);
+      defaultLoaded = true;
+    }
+  }
+
+  // If no default was found, apply the first preset as a fallback
+  if (!defaultLoaded && !presets.empty()) {
+    applyPreset(presets[0]);
+  }
+  Serial.println("Presets loaded successfully.");
+}
+
+void savePresets() {
+  File file = SPIFFS.open("/presets.json", "w");
+  if (!file) {
+    Serial.println("Failed to open presets.json for writing");
+    return;
+  }
+
+  StaticJsonDocument<4096> doc; // Increased size for more presets
+  JsonArray array = doc.to<JsonArray>();
+
+  for (const auto& p : presets) {
+    JsonObject obj = array.createNestedObject();
+    obj["name"] = p.name;
+    obj["isDefault"] = p.isDefault;
+    obj["dryingTemp"] = p.dryingTemp;
+    obj["setpointHum"] = p.setpointHum;
+    obj["warmTemp"] = p.warmTemp;
+    obj["humHyst"] = p.humHyst;
+    obj["stallInterval"] = p.stallInterval / 60000.0; // Convert ms to minutes for JSON
+    obj["stallDelta"] = p.stallDelta;
+    obj["heatDur"] = p.heatDur / 3600000.0; // Convert ms to hours for JSON
+    obj["heatAction"] = p.heatAction;
+    obj["logInt"] = p.logInt / 60000.0; // Convert ms to minutes for JSON
+    obj["mode"] = p.mode;
+  }
+
+  if (serializeJson(doc, file) == 0) {
+    Serial.println("Failed to write to presets.json");
+  } else {
+    Serial.println("Presets saved successfully.");
+  }
+  file.close();
 }
 
 /* Display flushing */
@@ -213,8 +368,6 @@ void setupWebServer() {
     json += isHeaterEnabled ? "true" : "false";
     json += ",\"hum_hyst\":";
     json += String(humidityHysteresis, 1);
-    json += ",\"selected_mode\":";
-    json += String(selectedMode);
     json += ",\"stall_interval\":";
     json += String(stallCheckInterval);
     json += ",\"stall_delta\":";
@@ -225,9 +378,147 @@ void setupWebServer() {
     long remaining = 0;
     if (currentState == STATE_HEATING && isHeaterEnabled) remaining = heatDuration - (millis() - heatStartTime);
     json += String(remaining > 0 ? remaining : 0);
+    json += ",\"log_interval\":";
+    json += String(logIntervalMillis / 60000.0, 1);
+    json += ",\"selected_mode\":";
+    json += String(selectedMode);
     json += ",\"heat_action\":\"" + String(heatCompletionAction == ACTION_STOP ? "Stop" : "Warm") + "\"";
     json += "}";
     request->send(200, "application/json", json);
+  });
+
+  // --- Logging Endpoints ---
+  server.on("/start_log", HTTP_POST, [](AsyncWebServerRequest *request){
+    isLoggingEnabled = true;
+    loggingStartTime = millis();
+    lastTimedLogTime = loggingStartTime; // Reset timed log on start
+    // Send header as first log entry
+    String header = "SETUP,DryingTemp:" + String(dryingTemperature) + ",WarmingTemp:" + String(warmTemperature) + ",HumSet:" + String(setpointHumidity) + ",HumHyst:" + String(humidityHysteresis) + ",StallInt:" + String(stallCheckInterval/60000) + ",StallDelta:" + String(stallHumidityDelta) + ",HeatDur:" + String(heatDuration/3600000.0, 1) + ",HeatAction:" + (heatCompletionAction == ACTION_STOP ? "Stop" : "Warm") + ",LogIntervalMin:" + String(logIntervalMillis / 60000.0, 1);
+    ws.textAll(header);
+    request->send(200, "text/plain", "OK");
+  });
+  server.on("/stop_log", HTTP_POST, [](AsyncWebServerRequest *request){
+    isLoggingEnabled = false;
+    request->send(200, "text/plain", "OK");
+  });
+
+  // Route to set the log interval
+  server.on("/setloginterval", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("value", true)) {
+      float minutes = request->getParam("value", true)->value().toFloat();
+      if (minutes > 0) {
+        logIntervalMillis = minutes * 60000;
+      }
+      request->send(200, "text/plain", "OK");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  // --- Preset Endpoints ---
+  server.on("/presets/list", HTTP_GET, [](AsyncWebServerRequest *request){
+    String json = "[";
+    for (size_t i = 0; i < presets.size(); ++i) {
+      json += "{\"name\":\"" + presets[i].name + "\",\"isDefault\":" + (presets[i].isDefault ? "true" : "false") + "}";
+      if (i < presets.size() - 1) json += ",";
+    }
+    json += "]";
+    request->send(200, "application/json", json);
+  });
+
+  server.on("/presets/load", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("name", true)) {
+      String name = request->getParam("name", true)->value();
+      for (const auto& p : presets) {
+        if (p.name == name) {
+          applyPreset(p);
+          request->send(200, "text/plain", "OK");
+          return;
+        }
+      }
+    }
+    request->send(404, "text/plain", "Preset not found");
+  });
+
+  server.on("/presets/download", HTTP_GET, [](AsyncWebServerRequest *request){
+    File file = SPIFFS.open("/presets.json", "r");
+    if (!file) {
+      request->send(500, "text/plain", "Could not read presets file.");
+      return;
+    }
+    String content = file.readString();
+    file.close();
+    request->send(200, "application/json", content);
+  });
+
+  server.on("/presets/save", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("name", true)) {
+      String name = request->getParam("name", true)->value();
+      // Check if preset with this name already exists to update it
+      for (auto& p : presets) {
+        if (p.name == name) {
+          // Update existing preset
+          p.dryingTemp = dryingTemperature; p.setpointHum = setpointHumidity; p.warmTemp = warmTemperature; p.humHyst = humidityHysteresis;
+          p.stallInterval = stallCheckInterval; p.stallDelta = stallHumidityDelta; p.heatDur = heatDuration;
+          p.heatAction = heatCompletionAction; p.logInt = logIntervalMillis; p.mode = selectedMode;
+          savePresets();
+          request->send(200, "text/plain", "Updated");
+          return;
+        }
+      }
+      // If not found, create a new one
+      Preset p_new;
+      p_new.name = name;
+      p_new.dryingTemp = dryingTemperature; p_new.setpointHum = setpointHumidity; p_new.warmTemp = warmTemperature; p_new.humHyst = humidityHysteresis;
+      p_new.stallInterval = stallCheckInterval; p_new.stallDelta = stallHumidityDelta; p_new.heatDur = heatDuration;
+      p_new.heatAction = heatCompletionAction; p_new.logInt = logIntervalMillis; p_new.mode = selectedMode;
+      presets.push_back(p_new);
+      savePresets();
+      request->send(200, "text/plain", "Saved");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  server.on("/presets/delete", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("name", true)) {
+      String name = request->getParam("name", true)->value();
+      presets.erase(std::remove_if(presets.begin(), presets.end(), [&](const Preset& p){ return p.name == name; }), presets.end());
+      savePresets();
+      request->send(200, "text/plain", "Deleted");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  server.on("/presets/rename", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("old_name", true) && request->hasParam("new_name", true)) {
+      String old_name = request->getParam("old_name", true)->value();
+      String new_name = request->getParam("new_name", true)->value();
+
+      for (auto& p : presets) {
+        if (p.name == old_name) {
+          p.name = new_name;
+          savePresets();
+          request->send(200, "text/plain", "Renamed");
+          return;
+        }
+      }
+      request->send(404, "text/plain", "Preset not found");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  server.on("/presets/setdefault", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("name", true)) {
+      String name = request->getParam("name", true)->value();
+      for (auto& p : presets) { p.isDefault = (p.name == name); }
+      savePresets();
+      request->send(200, "text/plain", "OK");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
   });
 
   // Route to set the temperature setpoint
@@ -361,6 +652,10 @@ void setupWebServer() {
     lastTransitionReason = REASON_USER_ACTION;
     request->send(200, "text/plain", "OK");
   });
+
+  // Attach the WebSocket handler
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
 
   server.begin();
 }
@@ -510,6 +805,24 @@ void update_message_box(const char* message) {
   lv_label_set_text(message_label, message);
 }
 
+void sendLog(String event) {
+  if (!isLoggingEnabled) return;
+
+  // Calculate elapsed time HH:MM:SS
+  uint32_t elapsed_ms = millis() - loggingStartTime;
+  uint32_t h = elapsed_ms / 3600000;
+  uint32_t m = (elapsed_ms % 3600000) / 60000;
+  uint32_t s = (elapsed_ms % 60000) / 1000;
+  char timeStr[10];
+  sprintf(timeStr, "%02d:%02d:%02d", h, m, s);
+
+  // Format: Timestamp,Event,Temp,Humidity
+  String logEntry = String(timeStr) + "," + event + "," + String(currentTemperature, 1) + "," + String(currentHumidity, 1);
+  
+  ws.textAll(logEntry);
+  Serial.println("Log: " + logEntry);
+}
+
 void update_sensor_task(lv_timer_t * timer) {
   float t = sht31.readTemperature();
   float h = sht31.readHumidity();
@@ -656,6 +969,7 @@ void controlHeaterTask(lv_timer_t * timer) {
   // Update the display if the state changed
   if (previousState != currentState) {
     update_process_status_display();
+    sendLog("STATUS_" + currentStatusString);
   }
 
   // --- Thermostat Logic based on State ---
@@ -698,8 +1012,20 @@ void controlHeaterTask(lv_timer_t * timer) {
     digitalWrite(HEATER_PIN, isHeaterOn ? HIGH : LOW);
     update_heater_status_display();
 
+    sendLog(isHeaterOn ? "HEAT_ON" : "HEAT_OFF");
+
     char msg[30];
     sprintf(msg, "Heater turned %s", isHeaterOn ? "ON" : "OFF");
     update_message_box(msg);
   }
+
+  // --- Timed Logging ---
+  if (isLoggingEnabled && (millis() - lastTimedLogTime >= logIntervalMillis)) {
+    sendLog("TIMED");
+    lastTimedLogTime = millis();
+  }
+}
+
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  //Handle WebSocket events
 }

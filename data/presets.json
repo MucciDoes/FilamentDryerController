@@ -1,0 +1,77 @@
+[
+  {
+    "_metadata": "This object contains human-readable notes and mappings. It is ignored by the controller.",
+    "field_notes": {
+      "mode": "0=Dry, 1=Heat, 2=Warm",
+      "heatAction": "0=Stop, 1=Warm",
+      "dryingTemp": "Degrees Celsius",
+      "setpointHum": "Relative Humidity %",
+      "warmTemp": "Degrees Celsius",
+      "humHyst": "Relative Humidity %",
+      "stallInterval": "Minutes",
+      "stallDelta": "Relative Humidity %",
+      "heatDur": "Hours",
+      "logInt": "Minutes"
+    }
+  },
+  {
+    "name": "PLA - Standard",
+    "notes": "Good all-around settings for most PLA filaments.",
+    "isDefault": true,
+    "dryingTemp": 50.0,
+    "setpointHum": 30.0,
+    "warmTemp": 35.0,
+    "humHyst": 5.0,
+    "stallInterval": 30.0,
+    "stallDelta": 0.5,
+    "heatDur": 4.0,
+    "heatAction": 1, 
+    "logInt": 1.0,
+    "mode": 0 
+  },
+   {
+    "name": "PLA - Standard [HEAT]",
+    "notes": "Good all-around settings for most PLA filaments.",
+    "isDefault": true,
+    "dryingTemp": 50.0,
+    "setpointHum": 30.0,
+    "warmTemp": 35.0,
+    "humHyst": 5.0,
+    "stallInterval": 30.0,
+    "stallDelta": 0.5,
+    "heatDur": 4.0,
+    "heatAction": 1, 
+    "logInt": 1.0,
+    "mode": 1 
+  },
+  {
+    "name": "PETG - High Temp",
+    "notes": "Aggressive drying for PETG that is known to be wet.",
+    "isDefault": false,
+    "dryingTemp": 65.0,
+    "setpointHum": 15.0,
+    "warmTemp": 40.0,
+    "humHyst": 3.0,
+    "stallInterval": 60.0,
+    "stallDelta": 0.2,
+    "heatDur": 8.0,
+    "heatAction": 1, 
+    "logInt": 5.0,
+    "mode": 0 
+  },
+  {
+    "name": "TPU - Quick Dry",
+    "notes": "A shorter, lower-temp cycle for flexible filaments. Set to STOP on completion.",
+    "isDefault": false,
+    "dryingTemp": 45.0,
+    "setpointHum": 20.0,
+    "warmTemp": 30.0,
+    "humHyst": 4.0,
+    "stallInterval": 15.0,
+    "stallDelta": 0.3,
+    "heatDur": 2.0,
+    "heatAction": 0, 
+    "logInt": 2.0,
+    "mode": 0 
+  }
+]

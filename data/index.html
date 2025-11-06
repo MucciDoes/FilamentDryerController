@@ -5,6 +5,7 @@
     <meta name='viewport' content='width=device-width, initial-scale=1'>
     <title>Filament Dryer</title>
     <style>
+        @import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css');
         body { font-family: Arial, sans-serif; text-align: center; margin: 20px; background-color: #e9e9e9; }
         h1 { color: #333; }
         .grid-container { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; max-width: 600px; margin: 20px auto; }
@@ -43,15 +44,17 @@
             border-radius: 5px;
         }
         .button-group button.active { background-color: #4CAF50; color: white; border-color: #3e8e41; }
+        .log-button:active {
+            transform: translateY(1px);
+            background-color: #dcdcdc;
+        }
         .help-icon {
             position: absolute;
             top: 5px;
             right: 7px;
             color: #1565C0; /* Dark Blue */
             cursor: pointer;
-            font-size: 18px;
-            font-weight: bold;
-            font-family: 'Georgia', serif;
+            font-size: 16px;
         }
         .hidden-by-mode {
             visibility: hidden;
@@ -71,7 +74,9 @@
     </style>
     <script>
         let currentData = {};
+        let ws;
         function fetchData() {
+            // Also fetch presets when we fetch data
             var x = new XMLHttpRequest();
             x.onreadystatechange = function () {
                 if (this.readyState == 4 && this.status == 200) {
@@ -85,6 +90,7 @@
                     document.getElementById('stall_interval_val').innerText = currentData.stall_interval / 60000 + ' min';
                     document.getElementById('stall_delta_val').innerText = currentData.stall_delta + ' %';
                     document.getElementById('heat_duration_val').innerText = (currentData.heat_duration / 3600000).toFixed(1) + ' hours';
+                    document.getElementById('log_interval_val').innerText = currentData.log_interval + ' min';
 
                     var remEl = document.getElementById('heat_rem_item');
                     if (currentData.process_state === 'HEATING' && currentData.is_enabled) {
@@ -134,7 +140,7 @@
                     if (sm == 0) { // DRY Mode
                         heatingTempItem.classList.remove('hidden-by-mode');
                         warmingTempItem.classList.remove('hidden-by-mode');
-                        humidityGroup.classList.remove('hidden-by-mode');
+                        humidityGroup.style.display = 'block'; // Use display for entire groups
                         heatDurationItem.classList.add('hidden-by-mode');
                         heatActionItem.classList.add('hidden-by-mode');
                     } else if (sm == 1) { // HEAT Mode
@@ -146,13 +152,13 @@
                         }
                         heatDurationItem.classList.remove('hidden-by-mode');
                         heatActionItem.classList.remove('hidden-by-mode');
-                        humidityGroup.classList.add('hidden-by-mode');
+                        humidityGroup.style.display = 'none'; // Use display for entire groups
                     } else if (sm == 2) { // WARM Mode
                         warmingTempItem.classList.remove('hidden-by-mode');
                         heatingTempItem.classList.add('hidden-by-mode');
                         heatDurationItem.classList.add('hidden-by-mode');
                         heatActionItem.classList.add('hidden-by-mode');
-                        humidityGroup.classList.add('hidden-by-mode');
+                        humidityGroup.style.display = 'none'; // Use display for entire groups
                     }
 
 
@@ -178,7 +184,7 @@
             input.type = 'number';
             input.className = 'edit-in-place';
             input.value = originalValue;
-            input.step = (editType === 'stallDelta' || editType === 'humHyst' || editType === 'heatDuration') ? '0.1' : '1';
+            input.step = (editType === 'stallDelta' || editType === 'humHyst' || editType === 'heatDuration' || editType === 'logInterval') ? '0.1' : '1';
 
             const finishEdit = (save) => {
                 if (save) {
@@ -193,6 +199,7 @@
                         else if (editType === 'humSetpoint') { endpoint = '/setpointhum'; }
                         else if (editType === 'humHyst') { endpoint = '/sethumhyst'; }
                         else if (editType === 'stallDelta') { endpoint = '/setstalldelta'; }
+                        else if (editType === 'logInterval') { endpoint = '/setloginterval'; }
                         postData(endpoint, 'value=' + valueToSend);
                     }
                 }
@@ -217,17 +224,129 @@
         function hideHelp() {
             document.getElementById('help-overlay').style.display = 'none';
         }
+        function populatePresets() {
+            var x = new XMLHttpRequest();
+            x.onreadystatechange = function () {
+                if (this.readyState == 4 && this.status == 200) {
+                    const presets = JSON.parse(this.responseText);
+                    const select = document.getElementById('preset_select');
+                    const currentVal = select.value;
+                    select.innerHTML = ''; // Clear existing options
+                    presets.forEach(p => {
+                        const option = document.createElement('option');
+                        option.value = p.name;
+                        option.innerText = p.name + (p.isDefault ? ' (Default)' : '');
+                        select.appendChild(option);
+                    });
+                    select.value = currentVal; // Try to re-select the previous value
+                }
+            };
+            x.open('GET', '/presets/list', true);
+            x.send();
+        }
+        function loadPreset() {
+            const name = document.getElementById('preset_select').value;
+            if (name) postData('/presets/load', 'name=' + name);
+        }
+        function savePreset() {
+            const name = prompt("Save current settings as preset name:", document.getElementById('preset_select').value + " (Copy)");
+            if (name) postData('/presets/save', 'name=' + name);
+            setTimeout(populatePresets, 500); // Refresh dropdown after a delay
+        }
+        function deletePreset() {
+            const select = document.getElementById('preset_select');
+            const name = select.value;
+            if (name && confirm(`Are you sure you want to delete the preset "${name}"?`)) {
+                postData('/presets/delete', 'name=' + name);
+                setTimeout(populatePresets, 500); // Refresh dropdown
+            }
+        }
+        function setDefaultPreset() {
+            const name = document.getElementById('preset_select').value;
+            if (name) postData('/presets/setdefault', 'name=' + name);
+            setTimeout(populatePresets, 500); // Refresh dropdown to show new default
+        }
+        function renamePreset() {
+            const select = document.getElementById('preset_select');
+            const oldName = select.value;
+            if (!oldName) {
+                alert("No preset selected.");
+                return;
+            }
+            const newName = prompt("Enter new name for preset:", oldName);
+            if (newName && newName !== oldName) {
+                postData('/presets/rename', 'old_name=' + oldName + '&new_name=' + newName);
+                setTimeout(populatePresets, 500); // Refresh dropdown
+            }
+        }
+        function downloadPresets() {
+            var x = new XMLHttpRequest();
+            x.onreadystatechange = function () {
+                if (this.readyState == 4 && this.status == 200) {
+                    const blob = new Blob([this.responseText], { type: 'application/json' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'presets_backup.json';
+                    a.click();
+                }
+            };
+            x.open('GET', '/presets/download', true);
+            x.send();
+        }
+        function initWebSocket() {
+            ws = new WebSocket(`ws://${window.location.hostname}/ws`);
+            ws.onmessage = function(event) {
+                const logArea = document.getElementById('log_area');
+                logArea.value += event.data + '\n';
+                logArea.scrollTop = logArea.scrollHeight; // Auto-scroll
+            };
+            ws.onclose = function(event) {
+                setTimeout(initWebSocket, 2000); // Try to reconnect after 2 seconds
+            };
+        }
+        function startLogging() {
+            postData('/start_log', '');
+        }
+        function stopLogging() {
+            postData('/stop_log', '');
+        }
+        function clearLog() {
+            document.getElementById('log_area').value = '';
+        }
+        function downloadLog() {
+            const text = document.getElementById('log_area').value;
+            const blob = new Blob([text], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'dryer_log.csv';
+            a.click();
+        }
         function setHeatAction(action) { postData('/setheataction', 'action=' + action); }
         function toggleEnable() { postData('/toggle_enable', ''); }
         function setMode(mode) { postData('/setmode', 'mode=' + mode); }
         setInterval(fetchData, 2000);
-        window.onload = fetchData;
+        window.onload = function() { fetchData(); initWebSocket(); populatePresets(); };
     </script>
 </head>
 <body>
     <h1>Filament Dryer Control</h1>
+
+    <div class="group-box" style="max-width: 600px; margin: 20px auto;">
+        <h3>Presets<span class='help-icon' onclick="showHelp('Load, save, or manage settings presets for different filaments.')"><i class="fas fa-info-circle"></i></span></h3>
+        <div style="display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <select id="preset_select" style="padding: 8px;" onchange="loadPreset()"></select>
+            <div class="button-group">
+                <button class="log-button" onclick="savePreset()">Save Current As...</button>
+                <button class="log-button" onclick="setDefaultPreset()">Set as Default</button>
+                <button class="log-button" onclick="renamePreset()">Rename</button>
+                <button class="log-button" onclick="downloadPresets()">Download All</button>
+                <button class="log-button" onclick="deletePreset()">Delete</button>
+            </div>
+        </div>
+    </div>
+
     <div class="group-box" style="max-width: 400px; margin: 20px auto; position: relative;">
-        <span class='help-icon' onclick="showHelp('Dry: Heats to the target temp until the target humidity is reached.\n\nHeat: Heats to the target temp for a fixed duration.\n\nWarm: Heats to a lower temp to maintain warmth indefinitely.')">i</span>
+        <span class='help-icon' onclick="showHelp('Dry: Heats to the target temp until the target humidity is reached.\n\nHeat: Heats to the target temp for a fixed duration.\n\nWarm: Heats to a lower temp to maintain warmth indefinitely.')"><i class="fas fa-info-circle"></i></span>
         <div class='mode-selector button-group' style="display: flex; align-items: center; justify-content: center;">
             <span class='label' style="margin-right: 10px;">Mode:</span>
             <button id='btn-mode-dry' onclick='setMode(0)'>Dry</button>
@@ -240,12 +359,12 @@
 
     <div class="grid-container" style="grid-template-columns: 1fr 1fr; max-width: 400px;">
         <div class='grid-item sensor-value temp-value'>
-            <span class='help-icon' onclick="showHelp('Current measured temperature inside the dryer.')">i</span>
+            <span class='help-icon' onclick="showHelp('Current measured temperature inside the dryer.')"><i class="fas fa-info-circle"></i></span>
             <div class='label'>Temperature</div>
             <div id='temp_val' class='data'>--.- &deg;C</div>
         </div>
         <div class='grid-item sensor-value hum-value'>
-            <span class='help-icon' onclick="showHelp('Current measured relative humidity inside the dryer.')">i</span>
+            <span class='help-icon' onclick="showHelp('Current measured relative humidity inside the dryer.')"><i class="fas fa-info-circle"></i></span>
             <div class='label'>Humidity</div>
             <div id='hum_val' class='data'>--.- %</div>
         </div>
@@ -253,39 +372,39 @@
 
     <div class='grid-container' style='margin-top:20px;'>
         <div class='grid-item temp-value'>
-            <span class='help-icon' onclick="showHelp('Actual current state of the heater relay.')">i</span>
+            <span class='help-icon' onclick="showHelp('Actual current state of the heater relay.')"><i class="fas fa-info-circle"></i></span>
             <div class='label'>Heater Status</div>
             <div id='heater_status' class='data status-off'>OFF</div>
         </div>
         <div class='grid-item control-box' style='grid-column: span 2;'>
-            <span class='help-icon' onclick="showHelp('Master switch to enable or disable the entire drying process. Click the status text to toggle.')">i</span>
+            <span class='help-icon' onclick="showHelp('Master switch to enable or disable the entire drying process. Click the status text to toggle.')"><i class="fas fa-info-circle"></i></span>
             <div class='label'>Process Control</div>
             <div id='enable_status' class='data status-off' onclick="toggleEnable()">DISABLED</div>
         </div>
     </div>
     
     <div class="group-box" style="max-width: 400px; margin: 20px auto; position: relative;">
-        <span class='help-icon' onclick="showHelp('Current operational state of the controller, showing the selected mode and current status.')">i</span>
+        <span class='help-icon' onclick="showHelp('Current operational state of the controller, showing the selected mode and current status.')"><i class="fas fa-info-circle"></i></span>
         <div class='label'>Process State</div>
         <div id='process_status' class='data'>IDLE</div>
     </div>
 
     <div class="group-box temp-group">
-        <h3>Dry | Heat | Warm: Temperature Settings<span class='help-icon' onclick="showHelp('Settings related to temperature control for all modes.')">i</span></h3>
+        <h3>Dry | Heat | Warm: Temperature Settings<span class='help-icon' onclick="showHelp('Settings related to temperature control for all modes.')"><i class="fas fa-info-circle"></i></span></h3>
         <div class='grid-container'>
             <div id='heating_temp_item' class='grid-item temp-value'>
-                <span class='help-icon' onclick="showHelp('Target temperature for the DRY and HEAT modes.')">i</span>
+                <span class='help-icon' onclick="showHelp('Target temperature for the DRY and HEAT modes.')"><i class="fas fa-info-circle"></i></span>
                 <div class='label'>Heating Temp Setpoint</div>
             <div id='drying_temp_val' class='data' onclick="startEdit(this, 'dryingTemp')">--.- &deg;C</div>
             </div>
             <div id='warming_temp_item' class='grid-item temp-value'>
-                <span class='help-icon' onclick="showHelp('Target temperature for the WARM mode, or after DRY mode completes.')">i</span>
+                <span class='help-icon' onclick="showHelp('Target temperature for the WARM mode, or after DRY mode completes.')"><i class="fas fa-info-circle"></i></span>
                 <div class='label'>Warming Temp Setpoint</div>
             <div id='warm_temp_val' class='data' onclick="startEdit(this, 'warmTemp')">--.- &deg;C</div>
             </div>
             <!-- This grid item now contains both duration and remaining time to stack them -->
             <div id='heat_duration_item' class='grid-item temp-value' style="padding-bottom: 5px;">
-                <span class='help-icon' onclick="showHelp('Duration for the timed HEAT mode and its real-time countdown.')">i</span>
+                <span class='help-icon' onclick="showHelp('Duration for the timed HEAT mode and its real-time countdown.')"><i class="fas fa-info-circle"></i></span>
                 <div>
                     <div class='label'>Heat Duration</div>
                 <div id='heat_duration_val' class='data' onclick="startEdit(this, 'heatDuration')">-- hours</div>
@@ -296,7 +415,7 @@
                 </div>
             </div>
             <div id='heat_action_item' class='grid-item temp-value' style='grid-column: span 2;'>
-                <span class='help-icon' onclick="showHelp('Action to take after HEAT mode timer expires.')">i</span>
+                <span class='help-icon' onclick="showHelp('Action to take after HEAT mode timer expires.')"><i class="fas fa-info-circle"></i></span>
                 <div class='label'>Heat Completion Action</div>
                 <div id='heat_action_val' class='button-group'>
                     <button id='btn-action-stop' onclick='setHeatAction(0)'>Stop</button>
@@ -307,25 +426,25 @@
     </div>
 
     <div id="humidity_group" class="group-box hum-group">
-        <h3>Dry: Humidity Settings<span class='help-icon' onclick="showHelp('Settings related to humidity control, used only in DRY mode.')">i</span></h3>
+        <h3>Dry: Humidity Settings<span class='help-icon' onclick="showHelp('Settings related to humidity control, used only in DRY mode.')"><i class="fas fa-info-circle"></i></span></h3>
         <div class='grid-container'>
             <div class='grid-item hum-value'>
-                <span class='help-icon' onclick="showHelp('Target humidity for DRY mode. The process ends when humidity drops below this value.')">i</span>
+                <span class='help-icon' onclick="showHelp('Target humidity for DRY mode. The process ends when humidity drops below this value.')"><i class="fas fa-info-circle"></i></span>
                 <div class='label'>Hum Setpoint</div>
                 <div id='hum_set_val' class='data' onclick="startEdit(this, 'humSetpoint')">--.- %</div>
             </div>
             <div class='grid-item hum-value'>
-                <span class='help-icon' onclick="showHelp('Allowed humidity increase before re-engaging DRYING from a WARM state.')">i</span>
+                <span class='help-icon' onclick="showHelp('Allowed humidity increase before re-engaging DRYING from a WARM state.')"><i class="fas fa-info-circle"></i></span>
                 <div class='label'>Hum Hysteresis</div>
                 <div id='hum_hyst_val' class='data' onclick="startEdit(this, 'humHyst')">--.- %</div>
             </div>
             <div class='grid-item hum-value'>
-                <span class='help-icon' onclick="showHelp('Time period to check for progress during DRY mode. If humidity does not drop enough in this interval, the process is stalled.')">i</span>
+                <span class='help-icon' onclick="showHelp('Time period to check for progress during DRY mode. If humidity does not drop enough in this interval, the process is stalled.')"><i class="fas fa-info-circle"></i></span>
                 <div class='label'>Stall Interval</div>
                 <div id='stall_interval_val' class='data' onclick="startEdit(this, 'stallInterval')">-- min</div>
             </div>
             <div class='grid-item hum-value' style='grid-column: span 3;'>
-                <span class='help-icon' onclick="showHelp('The minimum humidity drop required during the Stall Interval to continue DRY mode.')">i</span>
+                <span class='help-icon' onclick="showHelp('The minimum humidity drop required during the Stall Interval to continue DRY mode.')"><i class="fas fa-info-circle"></i></span>
                 <div class='label'>Stall Delta</div>
                 <div id='stall_delta_val' class='data' onclick="startEdit(this, 'stallDelta')">--.- %</div>
             </div>
@@ -338,6 +457,25 @@
             <span class="help-close" onclick="hideHelp()">&times;</span>
             <p id="help-content"></p>
         </div>
+    </div>
+
+    <!-- Logging Section -->
+    <div class="group-box" style="max-width: 600px; margin: 20px auto;">
+        <h3>Logging<span class='help-icon' onclick="showHelp('Real-time log of dryer activity. Data is collected in your browser and will be lost on page refresh.')"><i class="fas fa-info-circle"></i></span></h3>
+        <div style="display: flex; justify-content: center; align-items: flex-start; gap: 20px; margin-bottom: 10px; flex-wrap: wrap;">
+            <div class="button-group">
+                <button class="log-button" onclick="startLogging()">Start</button>
+                <button class="log-button" onclick="stopLogging()">Stop</button>
+                <button class="log-button" onclick="clearLog()">Clear</button>
+                <button class="log-button" onclick="downloadLog()">Download CSV</button>
+            </div>
+            <div class='grid-item' style="padding: 10px; min-width: 120px;">
+                <span class='help-icon' onclick="showHelp('Interval for timed log entries, in minutes. Set to 0 for no timed logs.')"><i class="fas fa-info-circle"></i></span>
+                <div class='label'>Log Interval</div>
+                <div id='log_interval_val' class='data' onclick="startEdit(this, 'logInterval')">--.- min</div>
+            </div>
+        </div>
+        <textarea id="log_area" style="width: 95%; height: 200px; font-family: monospace; font-size: 12px;"></textarea>
     </div>
 </body>
 </html>
