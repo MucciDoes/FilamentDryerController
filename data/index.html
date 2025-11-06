@@ -93,7 +93,7 @@
                     document.getElementById('log_interval_val').innerText = currentData.log_interval + ' min';
 
                     var remEl = document.getElementById('heat_rem_item');
-                    if (currentData.process_state === 'HEATING' && currentData.is_enabled) {
+                    if (currentData.process_state.includes('HEATING') && currentData.is_enabled) {
                         var rem_ms = currentData.heat_remaining;
                         var h = Math.floor(rem_ms / 3600000);
                         var m = Math.floor((rem_ms % 3600000) / 60000);
