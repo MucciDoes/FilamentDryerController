@@ -31,7 +31,7 @@
   },
    {
     "name": "PLA - Standard [HEAT]",
-    "notes": "Good all-around settings for most PLA filaments.",
+    "notes": "Uses HEAT Mode: Good all-around settings for most PLA filaments.",
     "isDefault": true,
     "dryingTemp": 50.0,
     "setpointHum": 30.0,

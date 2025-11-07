@@ -75,6 +75,7 @@
     <script>
         let currentData = {};
         let ws;
+        let allPresets = []; // Moved to global scope
         function fetchData() {
             // Also fetch presets when we fetch data
             var x = new XMLHttpRequest();
@@ -184,6 +185,7 @@
             input.type = 'number';
             input.className = 'edit-in-place';
             input.value = originalValue;
+            // Note: 'notes' will be handled by a different input type below
             input.step = (editType === 'stallDelta' || editType === 'humHyst' || editType === 'heatDuration' || editType === 'logInterval') ? '0.1' : '1';
 
             const finishEdit = (save) => {
@@ -217,6 +219,35 @@
             input.focus();
             input.select();
         }
+        function startNotesEdit(element) {
+            if (document.querySelector('.edit-in-place')) return; // Prevent multiple edits
+
+            const originalText = element.innerText;
+            element.style.display = 'none';
+
+            const textarea = document.createElement('textarea');
+            textarea.className = 'edit-in-place';
+            textarea.style.width = '95%';
+            textarea.style.height = '60px';
+            textarea.value = originalText;
+
+            const finishEdit = (save) => {
+                if (save) {
+                    const newNotes = textarea.value;
+                    element.innerText = newNotes; // Immediately update UI text
+                    postData('/setnotes', 'value=' + encodeURIComponent(newNotes)); // Send new notes to the controller
+                }
+                textarea.remove();
+                element.style.display = 'block';
+            };
+
+            textarea.addEventListener('blur', () => finishEdit(true));
+            textarea.addEventListener('keydown', (e) => { if (e.key === 'Escape') finishEdit(false); });
+
+            element.parentNode.insertBefore(textarea, element.nextSibling);
+            textarea.focus();
+            textarea.select();
+        }
         function showHelp(text) {
             document.getElementById('help-content').innerText = text;
             document.getElementById('help-overlay').style.display = 'flex';
@@ -225,24 +256,47 @@
             document.getElementById('help-overlay').style.display = 'none';
         }
         function populatePresets() {
+            allPresets = []; // Clear the global array
             var x = new XMLHttpRequest();
             x.onreadystatechange = function () {
                 if (this.readyState == 4 && this.status == 200) {
                     const presets = JSON.parse(this.responseText);
                     const select = document.getElementById('preset_select');
-                    const currentVal = select.value;
+                    const currentName = select.value;
                     select.innerHTML = ''; // Clear existing options
+                    let defaultPreset = null;
+
                     presets.forEach(p => {
+                        allPresets.push(p); // Save the full preset object
                         const option = document.createElement('option');
                         option.value = p.name;
                         option.innerText = p.name + (p.isDefault ? ' (Default)' : '');
                         select.appendChild(option);
+                        if (p.isDefault) {
+                            defaultPreset = p;
+                        }
                     });
-                    select.value = currentVal; // Try to re-select the previous value
+
+                    // Set selection and notes display
+                    const presetToSelect = allPresets.find(p => p.name === currentName) || defaultPreset;
+                    if (presetToSelect) {
+                        select.value = presetToSelect.name;
+                        document.getElementById('preset_notes').innerText = presetToSelect.notes || 'Click to add notes...';
+                    }
                 }
             };
             x.open('GET', '/presets/list', true);
             x.send();
+        }
+        function handlePresetChange() {
+            // This new function handles both loading the preset and updating the notes.
+            const select = document.getElementById('preset_select');
+            const selectedName = select.value;
+            const selectedPreset = allPresets.find(p => p.name === selectedName);
+            if (selectedPreset) {
+                document.getElementById('preset_notes').innerText = selectedPreset.notes || 'Click to add notes...';
+            }
+            loadPreset(); // Now call the original function to load settings
         }
         function loadPreset() {
             const name = document.getElementById('preset_select').value;
@@ -250,8 +304,16 @@
         }
         function savePreset() {
             const name = prompt("Save current settings as preset name:", document.getElementById('preset_select').value + " (Copy)");
-            if (name) postData('/presets/save', 'name=' + name);
+            if (name) {
+                postData('/presets/save', 'name=' + encodeURIComponent(name));
+            }
             setTimeout(populatePresets, 500); // Refresh dropdown after a delay
+        }
+        function updatePreset() {
+            const name = document.getElementById('preset_select').value;
+            if (name && confirm(`Are you sure you want to overwrite the preset "${name}" with the current settings?`)) {
+                postData('/presets/save', 'name=' + encodeURIComponent(name));
+            }
         }
         function deletePreset() {
             const select = document.getElementById('preset_select');
@@ -334,8 +396,9 @@
     <div class="group-box" style="max-width: 600px; margin: 20px auto;">
         <h3>Presets<span class='help-icon' onclick="showHelp('Load, save, or manage settings presets for different filaments.')"><i class="fas fa-info-circle"></i></span></h3>
         <div style="display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap;">
-            <select id="preset_select" style="padding: 8px;" onchange="loadPreset()"></select>
+            <select id="preset_select" style="padding: 8px; width: 200px;" onchange="handlePresetChange()"></select>
             <div class="button-group">
+                <button class="log-button" onclick="updatePreset()">Save</button>
                 <button class="log-button" onclick="savePreset()">Save Current As...</button>
                 <button class="log-button" onclick="setDefaultPreset()">Set as Default</button>
                 <button class="log-button" onclick="renamePreset()">Rename</button>
@@ -343,6 +406,7 @@
                 <button class="log-button" onclick="deletePreset()">Delete</button>
             </div>
         </div>
+        <div id="preset_notes" class="data" onclick="startNotesEdit(this)" style="margin-top: 10px; padding: 5px; color: #555; font-style: italic; min-height: 1.2em; border-top: 1px solid #ddd; text-align: left; white-space: pre-wrap; cursor: pointer;">Select a preset to see its notes.</div>
     </div>
 
     <div class="group-box" style="max-width: 400px; margin: 20px auto; position: relative;">

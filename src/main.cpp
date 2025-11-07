@@ -35,6 +35,7 @@ AsyncWebSocket ws("/ws"); // Create a WebSocket object
 /* Settings & State */
 struct Preset {
   String name;
+  String notes;
   bool isDefault = false;
   float dryingTemp;
   float setpointHum;
@@ -48,22 +49,23 @@ struct Preset {
   int mode; // 0=Dry, 1=Heat, 2=Warm
 
   // Default constructor (important for std::vector and other contexts)
-  Preset() : name(""), isDefault(false), dryingTemp(0.0f), setpointHum(0.0f),
+  Preset() : name(""), notes(""), isDefault(false), dryingTemp(0.0f), setpointHum(0.0f),
              warmTemp(0.0f), humHyst(0.0f), stallInterval(0U), stallDelta(0.0f),
              heatDur(0U), heatAction(0), logInt(0U) {}
 
   // Parameterized constructor for easy initialization
-  Preset(String _name, bool _isDefault, float _dryingTemp, float _setpointHum,
+  Preset(String _name, String _notes, bool _isDefault, float _dryingTemp, float _setpointHum,
          float _warmTemp, float _humHyst, uint32_t _stallInterval,
          float _stallDelta, uint32_t _heatDur, int _heatAction, uint32_t _logInt, int _mode)
-    : name(_name), isDefault(_isDefault), dryingTemp(_dryingTemp), setpointHum(_setpointHum),
-      warmTemp(_warmTemp), humHyst(_humHyst), stallInterval(_stallInterval),
+    : name(_name), notes(_notes), isDefault(_isDefault), dryingTemp(_dryingTemp), 
+      setpointHum(_setpointHum), warmTemp(_warmTemp), humHyst(_humHyst), stallInterval(_stallInterval),
       stallDelta(_stallDelta), heatDur(_heatDur), heatAction(_heatAction), logInt(_logInt),
       mode(_mode) {}
 };
 
 std::vector<Preset> presets;
 
+String currentNotes = "";
 float dryingTemperature = 50.0;
 float setpointHumidity = 30.0;
 float warmTemperature = 35.0;
@@ -205,6 +207,7 @@ void loop() {
 }
 
 void applyPreset(const Preset& preset) {
+  currentNotes = preset.notes;
   dryingTemperature = preset.dryingTemp;
   setpointHumidity = preset.setpointHum;
   warmTemperature = preset.warmTemp;
@@ -227,8 +230,8 @@ void loadPresets() {
     Serial.println("presets.json not found or empty. Creating default presets.");
     // Create default presets
     presets.clear();
-    Preset p1("PLA - Generic", true, 50.0f, 30.0f, 35.0f, 5.0f, 30 * 60000U, 0.5f, 4 * 3600000U, 0, 1 * 60000U, 0); // Dry Mode
-    Preset p2("PETG - Strong", false, 65.0f, 15.0f, 40.0f, 3.0f, 60 * 60000U, 0.2f, 8 * 3600000U, 1, 5 * 60000U, 0); // Dry Mode
+    Preset p1("PLA - Generic", "Standard PLA drying settings.", true, 50.0f, 30.0f, 35.0f, 5.0f, 30 * 60000U, 0.5f, 4 * 3600000U, 0, 1 * 60000U, 0); // Dry Mode
+    Preset p2("PETG - Strong", "Aggressive PETG drying.", false, 65.0f, 15.0f, 40.0f, 3.0f, 60 * 60000U, 0.2f, 8 * 3600000U, 1, 5 * 60000U, 0); // Dry Mode
     presets.push_back(p1);
     presets.push_back(p2);
     savePresets();
@@ -253,16 +256,17 @@ void loadPresets() {
     if (obj.containsKey("_metadata")) continue;
     Preset p;
     p.name = obj["name"].as<String>();
+    p.notes = obj["notes"].as<String>(); // This is safe, returns "" if 'notes' is missing
     p.isDefault = obj["isDefault"];
     p.dryingTemp = obj["dryingTemp"];
     p.setpointHum = obj["setpointHum"];
     p.warmTemp = obj["warmTemp"];
     p.humHyst = obj["humHyst"];
-    p.stallInterval = obj["stallInterval"].as<float>() * 60000; // Convert minutes from JSON to ms
+    p.stallInterval = obj["stallInterval"].as<unsigned long>() * 60000UL; // Use unsigned long for safe math
     p.stallDelta = obj["stallDelta"];
-    p.heatDur = obj["heatDur"].as<float>() * 3600000; // Convert hours from JSON to ms
+    p.heatDur = (uint32_t)(obj["heatDur"].as<float>() * 3600000.0f); // Keep float for hours, but cast result
     p.heatAction = obj["heatAction"];
-    p.logInt = obj["logInt"].as<float>() * 60000; // Convert minutes from JSON to ms
+    p.logInt = obj["logInt"].as<unsigned long>() * 60000UL; // Use unsigned long for safe math
     p.mode = obj["mode"];
     presets.push_back(p);
 
@@ -292,16 +296,17 @@ void savePresets() {
   for (const auto& p : presets) {
     JsonObject obj = array.createNestedObject();
     obj["name"] = p.name;
+    obj["notes"] = p.notes;
     obj["isDefault"] = p.isDefault;
     obj["dryingTemp"] = p.dryingTemp;
     obj["setpointHum"] = p.setpointHum;
     obj["warmTemp"] = p.warmTemp;
     obj["humHyst"] = p.humHyst;
-    obj["stallInterval"] = p.stallInterval / 60000.0; // Convert ms to minutes for JSON
+    obj["stallInterval"] = (float)p.stallInterval / 60000.0f; // Convert ms to minutes for JSON
     obj["stallDelta"] = p.stallDelta;
-    obj["heatDur"] = p.heatDur / 3600000.0; // Convert ms to hours for JSON
+    obj["heatDur"] = (float)p.heatDur / 3600000.0f; // Convert ms to hours for JSON
     obj["heatAction"] = p.heatAction;
-    obj["logInt"] = p.logInt / 60000.0; // Convert ms to minutes for JSON
+    obj["logInt"] = (float)p.logInt / 60000.0f; // Convert ms to minutes for JSON
     obj["mode"] = p.mode;
   }
 
@@ -417,13 +422,19 @@ void setupWebServer() {
 
   // --- Preset Endpoints ---
   server.on("/presets/list", HTTP_GET, [](AsyncWebServerRequest *request){
-    String json = "[";
-    for (size_t i = 0; i < presets.size(); ++i) {
-      json += "{\"name\":\"" + presets[i].name + "\",\"isDefault\":" + (presets[i].isDefault ? "true" : "false") + "}";
-      if (i < presets.size() - 1) json += ",";
+    // Use ArduinoJson to safely serialize the list. This correctly handles
+    // special characters in any field, including the 'notes' field.
+    StaticJsonDocument<2048> doc;
+    JsonArray array = doc.to<JsonArray>();
+    for (const auto& p : presets) {
+      JsonObject obj = array.createNestedObject();
+      obj["name"] = p.name;
+      obj["isDefault"] = p.isDefault;
+      obj["notes"] = p.notes;
     }
-    json += "]";
-    request->send(200, "application/json", json);
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
   });
 
   server.on("/presets/load", HTTP_POST, [](AsyncWebServerRequest *request){
@@ -458,6 +469,7 @@ void setupWebServer() {
       for (auto& p : presets) {
         if (p.name == name) {
           // Update existing preset
+          p.notes = currentNotes; // THIS LINE WAS MISSING. It ensures the notes from RAM are used.
           p.dryingTemp = dryingTemperature; p.setpointHum = setpointHumidity; p.warmTemp = warmTemperature; p.humHyst = humidityHysteresis;
           p.stallInterval = stallCheckInterval; p.stallDelta = stallHumidityDelta; p.heatDur = heatDuration;
           p.heatAction = heatCompletionAction; p.logInt = logIntervalMillis; p.mode = selectedMode;
@@ -469,6 +481,7 @@ void setupWebServer() {
       // If not found, create a new one
       Preset p_new;
       p_new.name = name;
+      p_new.notes = currentNotes; // Use the global variable
       p_new.dryingTemp = dryingTemperature; p_new.setpointHum = setpointHumidity; p_new.warmTemp = warmTemperature; p_new.humHyst = humidityHysteresis;
       p_new.stallInterval = stallCheckInterval; p_new.stallDelta = stallHumidityDelta; p_new.heatDur = heatDuration;
       p_new.heatAction = heatCompletionAction; p_new.logInt = logIntervalMillis; p_new.mode = selectedMode;
@@ -515,6 +528,16 @@ void setupWebServer() {
       String name = request->getParam("name", true)->value();
       for (auto& p : presets) { p.isDefault = (p.name == name); }
       savePresets();
+      request->send(200, "text/plain", "OK");
+    } else {
+      request->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  // Route to set the notes
+  server.on("/setnotes", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("value", true)) {
+      currentNotes = request->getParam("value", true)->value();
       request->send(200, "text/plain", "OK");
     } else {
       request->send(400, "text/plain", "Bad Request");
