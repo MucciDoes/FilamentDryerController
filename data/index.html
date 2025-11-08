@@ -492,6 +492,10 @@
             startMessagePolling(); // Restart polling for new messages
         }
 
+        function dismissUnsavedChangesBanner() {
+            document.getElementById('unsaved-changes-banner').style.display = 'none';
+        }
+
         window.onload = function() { 
             fetchData();
             initWebSocket();
@@ -503,7 +507,7 @@
 <body>
     <h1>Filament Dryer Control</h1>
 
-    <div id="unsaved-changes-banner" class="message-banner info" style="display: none;">Unsaved changes have been made.</div>
+    <div id="unsaved-changes-banner" class="message-banner info" style="display: none;"><span class="message-close" onclick="dismissUnsavedChangesBanner()">&times;</span>Unsaved changes have been made.</div>
     <div id="message-banner" class="message-banner"><span class="message-close" onclick="dismissMessage()">&times;</span><span id="message-text"></span></div>
 
     <div class="group-box" style="max-width: 600px; margin: 20px auto;">
