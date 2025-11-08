@@ -112,6 +112,15 @@ uint32_t loggingStartTime = 0;
 uint32_t logIntervalMillis = 60000; // Default 1 minute
 uint32_t lastTimedLogTime = 0;
 
+enum MessageType { MSG_INFO, MSG_ERROR };
+struct WebMessage {
+  String text;
+  MessageType type;
+};
+
+/* Web Message Queue */
+std::vector<WebMessage> webMessageQueue;
+
 /* UI Object Globals */
 String currentStatusString = "IDLE";
 lv_obj_t * temp_label_value;
@@ -142,6 +151,19 @@ void heater_enable_switch_event_handler(lv_event_t * e);
 void setupSensor();
 void update_sensor_task(lv_timer_t * timer);
 void controlHeaterTask(lv_timer_t * timer);
+void logToWeb(String message, MessageType type = MSG_INFO);
+
+void logToWeb(String message, MessageType type) {
+  // Prevent queuing the same message consecutively.
+  // This stops floods of identical messages (e.g., from a sensor error).
+  if (!webMessageQueue.empty() && webMessageQueue.back().text == message) {
+    return; // Don't add duplicate message
+  }
+
+  if (webMessageQueue.size() < 10) { // Limit queue size to prevent memory issues
+    webMessageQueue.push_back({message, type});
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -160,8 +182,7 @@ void setup() {
 
   // --- Initialize SPIFFS ---
   if(!SPIFFS.begin(true)){
-    update_message_box("SPIFFS Mount Failed!");
-    return;
+    // We can't log here as UI isn't ready, but this prevents a crash.
   }
   lv_disp_draw_buf_init(&draw_buf, buf, NULL, screenWidth * 10);
 
@@ -196,7 +217,6 @@ void setup() {
 
   // --- Create a task to control the heater ---
   lv_timer_create(controlHeaterTask, 1000, NULL); // Run thermostat logic every second
-
 }
 
 void loop() {
@@ -225,7 +245,7 @@ void applyPreset(const Preset& preset) {
 void loadPresets() {
   File file = SPIFFS.open("/presets.json", "r");
   if (!file || file.size() == 0) {
-    Serial.println("presets.json not found or empty. Creating default presets.");
+    logToWeb("Presets file not found. Creating defaults.");
     // Create default presets
     presets.clear();
     Preset p1("PLA - Generic", "Standard PLA drying settings.", true, 50.0f, 30.0f, 35.0f, 5.0f, 30 * 60000U, 0.5f, 4 * 3600000U, 0, 1 * 60000U, 0); // Dry Mode
@@ -242,7 +262,7 @@ void loadPresets() {
   file.close();
 
   if (error) {
-    Serial.println("Failed to parse presets.json");
+    logToWeb("Failed to parse presets.json. Check file for errors.", MSG_ERROR);
     return;
   }
 
@@ -278,13 +298,14 @@ void loadPresets() {
   if (!defaultLoaded && !presets.empty()) {
     applyPreset(presets[0]);
   }
-  Serial.println("Presets loaded successfully.");
+  // This message is too noisy for startup, so it's commented out.
+  // logToWeb("Presets loaded successfully.");
 }
 
 void savePresets() {
   File file = SPIFFS.open("/presets.json", "w");
   if (!file) {
-    Serial.println("Failed to open presets.json for writing");
+    logToWeb("Error: Failed to open presets.json for writing.", MSG_ERROR);
     return;
   }
 
@@ -309,9 +330,9 @@ void savePresets() {
   }
 
   if (serializeJson(doc, file) == 0) {
-    Serial.println("Failed to write to presets.json");
+    logToWeb("Error: Failed to write to presets.json.", MSG_ERROR);
   } else {
-    Serial.println("Presets saved successfully.");
+    logToWeb("Presets saved successfully.", MSG_INFO);
   }
   file.close();
 }
@@ -329,19 +350,30 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
 
 void setupSensor() {
   Wire.begin(27, 22); // SDA=27, SCL=22
-  if (!sht31.begin(0x44)) { while (1) delay(10); }
+  if (!sht31.begin(0x44)) {
+    // Do NOT block here. Log the error and allow the system to continue.
+    update_message_box("Sensor Init Failed!");
+    logToWeb("CRITICAL: SHT31 sensor initialization failed!", MSG_ERROR);
+  }
 }
 
 void setupWiFi() {
   update_message_box("Connecting to WiFi...");
 
   WiFi.begin(ssid, password);
+  int retries = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    if (++retries > 20) { // 10-second timeout
+      update_message_box("WiFi Connect Failed!");
+      logToWeb("WiFi connection failed. Check credentials.", MSG_ERROR);
+      return;
+    }
   }
 
   char msgBuffer[50];
   sprintf(msgBuffer, "IP: %s", WiFi.localIP().toString().c_str());
+  logToWeb("WiFi Connected. IP: " + WiFi.localIP().toString());
   update_message_box(msgBuffer);
 }
 
@@ -354,10 +386,8 @@ void setupWebServer() {
   // Route for sensor readings (JSON endpoint)
   server.on("/readings", HTTP_GET, [](AsyncWebServerRequest *request){
     String json = "{";
-    json += "\"temperature\":";
-    json += String(currentTemperature, 1); // Format to 1 decimal place
-    json += ",\"humidity\":";
-    json += String(currentHumidity, 1); // Format to 1 decimal place
+    json += "\"temperature\":" + (isnan(currentTemperature) ? "null" : String(currentTemperature, 1));
+    json += ",\"humidity\":" + (isnan(currentHumidity) ? "null" : String(currentHumidity, 1));
     json += ",\"drying_temp\":";
     json += String(dryingTemperature, 1);
     json += ",\"setpoint_hum\":";
@@ -417,6 +447,21 @@ void setupWebServer() {
       request->send(400, "text/plain", "Bad Request");
     }
   });
+
+
+  // --- Message Queue Endpoint ---
+  server.on("/getmessage", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!webMessageQueue.empty()) {
+      WebMessage msg = webMessageQueue.front();
+      webMessageQueue.erase(webMessageQueue.begin()); // Dequeue the message
+      String json = "{\"type\":\"" + String(msg.type == MSG_INFO ? "info" : "error") + "\",";
+      json += "\"text\":\"" + msg.text + "\"}";
+      request->send(200, "application/json", json);
+    } else {
+      request->send(204, "text/plain", ""); // Send "No Content" if no message
+    }
+  });
+
 
   // --- Preset Endpoints ---
   server.on("/presets/list", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -864,6 +909,7 @@ void update_sensor_task(lv_timer_t * timer) {
     lv_label_set_text(temp_label_value, "Error");
     lv_label_set_text(hum_label_value, "Error");
     update_message_box("Sensor read error!");
+    logToWeb("Sensor read error! Check wiring.", MSG_ERROR);
   } else {
     currentTemperature = t; // Update global
     currentHumidity = h;    // Update global
@@ -894,10 +940,6 @@ void controlHeaterTask(lv_timer_t * timer) {
   } else {
     // If enabled, decide whether to start or continue a process
     if (currentState == STATE_IDLE) {
-      Serial.println("Transitioning from IDLE");
-      char msgBuffer[50];
-      sprintf(msgBuffer, "Mode: %d", selectedMode);
-      update_message_box(msgBuffer);
       
       // Transition to the user's selected mode and perform initial setup
       if (selectedMode == MODE_DRY) {

@@ -72,6 +72,27 @@
             position: relative;
         }
         .help-close { position: absolute; top: 5px; right: 10px; font-size: 24px; cursor: pointer; }
+        .message-banner {
+            display: none; /* Hidden by default */
+            position: fixed;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 600px;
+            padding: 15px;
+            border-radius: 0 0 8px 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            z-index: 2000;
+            text-align: left;
+        }
+        .message-banner.info {
+            background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5;
+        }
+        .message-banner.error {
+            background-color: #f8d7da; color: #58151a; border: 1px solid #f1aeb5;
+        }
+        .message-close { float: right; font-size: 20px; cursor: pointer; line-height: 1; }
     </style>
     <script>
         let currentData = {};
@@ -83,8 +104,17 @@
             x.onreadystatechange = function () {
                 if (this.readyState == 4 && this.status == 200) {
                     currentData = JSON.parse(this.responseText);
-                    document.getElementById('temp_val').innerText = currentData.temperature + ' °C';
-                    document.getElementById('hum_val').innerText = currentData.humidity + ' %';
+                    // Handle potential sensor errors (null values)
+                    if (currentData.temperature === null) {
+                        document.getElementById('temp_val').innerText = 'Error';
+                    } else {
+                        document.getElementById('temp_val').innerText = currentData.temperature + ' °C';
+                    }
+                    if (currentData.humidity === null) {
+                        document.getElementById('hum_val').innerText = 'Error';
+                    } else {
+                        document.getElementById('hum_val').innerText = currentData.humidity + ' %';
+                    }
                     document.getElementById('drying_temp_val').innerText = currentData.drying_temp + ' °C';
                     document.getElementById('hum_set_val').innerText = currentData.setpoint_hum + ' %';
                     document.getElementById('warm_temp_val').innerText = currentData.warm_temp + ' °C';
@@ -399,11 +429,48 @@
         function toggleEnable() { postData('/toggle_enable', ''); }
         function setMode(mode) { postData('/setmode', 'mode=' + mode); }
         setInterval(fetchData, 2000);
-        window.onload = function() { fetchData(); initWebSocket(); populatePresets(); };
+
+        // --- Message Polling ---
+        let messagePollInterval;
+
+        function getNextMessage() {
+            var x = new XMLHttpRequest();
+            x.onreadystatechange = function () {
+                if (this.readyState == 4) {
+                    if (this.status == 200 && this.responseText) {
+                        const msg = JSON.parse(this.responseText);
+                        const banner = document.getElementById('message-banner');
+                        document.getElementById('message-text').innerText = msg.text;
+                        banner.className = 'message-banner ' + msg.type; // Set class for color
+                        banner.style.display = 'block';
+                        stopMessagePolling(); // Stop polling while a message is shown
+                    }
+                }
+            };
+            x.open('GET', '/getmessage', true);
+            x.send();
+        }
+
+        function startMessagePolling() {
+            if (!messagePollInterval) messagePollInterval = setInterval(getNextMessage, 3000);
+        }
+        function stopMessagePolling() {
+            if (messagePollInterval) clearInterval(messagePollInterval);
+            messagePollInterval = null;
+        }
+
+        function dismissMessage() {
+            document.getElementById('message-banner').style.display = 'none';
+            startMessagePolling(); // Restart polling for new messages
+        }
+
+        window.onload = function() { fetchData(); initWebSocket(); populatePresets(); startMessagePolling(); };
     </script>
 </head>
 <body>
     <h1>Filament Dryer Control</h1>
+
+    <div id="message-banner" class="message-banner"><span class="message-close" onclick="dismissMessage()">&times;</span><span id="message-text"></span></div>
 
     <div class="group-box" style="max-width: 600px; margin: 20px auto;">
         <h3>Presets<span class='help-icon' onclick="showHelp('Load, save, or manage settings presets for different filaments.')"><i class="fas fa-info-circle"></i></span></h3>
