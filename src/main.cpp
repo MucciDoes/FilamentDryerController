@@ -63,7 +63,6 @@ struct Preset {
 
 std::vector<Preset> presets;
 
-String currentNotes = "";
 float dryingTemperature = 50.0;
 float setpointHumidity = 30.0;
 float warmTemperature = 35.0;
@@ -225,7 +224,6 @@ void loop() {
 }
 
 void applyPreset(const Preset& preset) {
-  currentNotes = preset.notes;
   dryingTemperature = preset.dryingTemp;
   setpointHumidity = preset.setpointHum;
   warmTemperature = preset.warmTemp;
@@ -576,16 +574,6 @@ void setupWebServer() {
       String name = request->getParam("name", true)->value();
       for (auto& p : presets) { p.isDefault = (p.name == name); }
       savePresets();
-      request->send(200, "text/plain", "OK");
-    } else {
-      request->send(400, "text/plain", "Bad Request");
-    }
-  });
-
-  // Route to set the notes
-  server.on("/setnotes", HTTP_POST, [](AsyncWebServerRequest *request){
-    if (request->hasParam("value", true)) {
-      currentNotes = request->getParam("value", true)->value();
       request->send(200, "text/plain", "OK");
     } else {
       request->send(400, "text/plain", "Bad Request");

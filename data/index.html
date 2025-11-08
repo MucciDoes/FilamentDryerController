@@ -43,6 +43,12 @@
             background-color: #e7e7e7;
             cursor: pointer;
             border-radius: 5px;
+            transition: all 0.2s ease-in-out;
+        }
+        .unsaved-changes-highlight {
+            border-color: #FFB300; /* Yellow */
+            background-color: #fff3cd;
+            box-shadow: 0 0 8px rgba(255, 179, 0, 0.7);
         }
         .button-group button.active { background-color: #4CAF50; color: white; border-color: #3e8e41; }
         .log-button:active {
@@ -98,6 +104,17 @@
         let currentData = {};
         let ws;
         let allPresets = []; // Moved to global scope
+        
+        // --- Unsaved Changes Flag & UI Management ---
+        function setUnsavedChanges(isDirty) {
+            hasUnsavedChanges = isDirty;
+            document.getElementById('unsaved-changes-banner').style.display = isDirty ? 'block' : 'none';
+            const highlightClass = 'unsaved-changes-highlight';
+            document.getElementById('btn-save').classList.toggle(highlightClass, isDirty);
+            document.getElementById('btn-save-as').classList.toggle(highlightClass, isDirty);
+        }
+
+        let hasUnsavedChanges = false;
         function fetchData() {
             // Also fetch presets when we fetch data
             var x = new XMLHttpRequest();
@@ -223,6 +240,7 @@
                 if (save) {
                     const newValue = input.value;
                     if (newValue !== '' && parseFloat(newValue) !== originalValue) {
+                        setUnsavedChanges(true);
                         let valueToSend = newValue;
                         let endpoint = '';
                         if (editType === 'stallInterval') { endpoint = '/setstallinterval'; valueToSend = newValue * 60000; }
@@ -265,8 +283,8 @@
             const finishEdit = (save) => {
                 if (save) {
                     const newNotes = textarea.value;
+                    if (newNotes !== originalText) setUnsavedChanges(true);
                     element.innerText = newNotes; 
-                    postData('/setnotes', 'value=' + encodeURIComponent(newNotes)); // Send new notes to the controller to update its temporary state
 
                     // Also update the notes in the local `allPresets` array.
                     const selectedName = document.getElementById('preset_select').value;
@@ -328,15 +346,16 @@
         }
         function handlePresetChange() {
             // This new function handles both loading the preset and updating the notes.
-            const select = document.getElementById('preset_select');
-            const selectedName = select.value;
+            const selectedName = document.getElementById('preset_select').value;
             const selectedPreset = allPresets.find(p => p.name === selectedName);
+
             if (selectedPreset) {
                 document.getElementById('preset_notes').innerText = selectedPreset.notes || 'Click to add notes...';
             }
             loadPreset(); // Now call the original function to load settings
         }
         function loadPreset() {
+            setUnsavedChanges(false); // Loading a preset clears any unsaved changes
             const name = document.getElementById('preset_select').value;
             if (name) postData('/presets/load', 'name=' + name);
         }
@@ -347,15 +366,16 @@
                 const notes = document.getElementById('preset_notes').innerText;
                 postData('/presets/save', 'name=' + encodeURIComponent(name) + '&notes=' + encodeURIComponent(notes));
             }
+            setUnsavedChanges(false);
             setTimeout(populatePresets, 500); // Refresh dropdown after a delay
         }
         function updatePreset() {
             const name = document.getElementById('preset_select').value;
-            if (name && confirm(`Are you sure you want to overwrite the preset "${name}" with the current settings?`)) {
-                // **THE FIX**: Also send the current notes from the UI.
+            if (name) {
                 const notes = document.getElementById('preset_notes').innerText;
                 postData('/presets/save', 'name=' + encodeURIComponent(name) + '&notes=' + encodeURIComponent(notes));
             }
+            setUnsavedChanges(false);
         }
         function deletePreset() {
             const select = document.getElementById('preset_select');
@@ -425,9 +445,17 @@
             a.download = 'dryer_log.csv';
             a.click();
         }
-        function setHeatAction(action) { postData('/setheataction', 'action=' + action); }
-        function toggleEnable() { postData('/toggle_enable', ''); }
-        function setMode(mode) { postData('/setmode', 'mode=' + mode); }
+        function setHeatAction(action) { 
+            setUnsavedChanges(true);
+            postData('/setheataction', 'action=' + action); 
+        }
+        function toggleEnable() { 
+            postData('/toggle_enable', ''); 
+        }
+        function setMode(mode) { 
+            setUnsavedChanges(true);
+            postData('/setmode', 'mode=' + mode); 
+        }
         setInterval(fetchData, 2000);
 
         // --- Message Polling ---
@@ -464,12 +492,18 @@
             startMessagePolling(); // Restart polling for new messages
         }
 
-        window.onload = function() { fetchData(); initWebSocket(); populatePresets(); startMessagePolling(); };
+        window.onload = function() { 
+            fetchData();
+            initWebSocket();
+            populatePresets();
+            startMessagePolling();
+        };
     </script>
 </head>
 <body>
     <h1>Filament Dryer Control</h1>
 
+    <div id="unsaved-changes-banner" class="message-banner info" style="display: none;">Unsaved changes have been made.</div>
     <div id="message-banner" class="message-banner"><span class="message-close" onclick="dismissMessage()">&times;</span><span id="message-text"></span></div>
 
     <div class="group-box" style="max-width: 600px; margin: 20px auto;">
@@ -477,8 +511,8 @@
         <div style="display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap;">
             <select id="preset_select" style="padding: 8px; width: 200px;" onchange="handlePresetChange()"></select>
             <div class="button-group">
-                <button class="log-button" onclick="updatePreset()">Save</button>
-                <button class="log-button" onclick="savePreset()">Save Current As...</button>
+                <button id="btn-save" class="log-button" onclick="updatePreset()">Save</button>
+                <button id="btn-save-as" class="log-button" onclick="savePreset()">Save As...</button>
                 <button class="log-button" onclick="setDefaultPreset()">Set as Default</button>
                 <button class="log-button" onclick="renamePreset()">Rename</button>
                 <button class="log-button" onclick="downloadPresets()">Download All</button>
