@@ -464,12 +464,18 @@ void setupWebServer() {
 
   server.on("/presets/save", HTTP_POST, [](AsyncWebServerRequest *request){
     if (request->hasParam("name", true)) {
+      // **THE FIX**: Before saving, update currentNotes from the web UI if the parameter is sent.
+      // This ensures we save the notes currently visible in the user's browser, not stale data.
+      if (request->hasParam("notes", true)) {
+        currentNotes = request->getParam("notes", true)->value();
+      }
+
       String name = request->getParam("name", true)->value();
       // Check if preset with this name already exists to update it
       for (auto& p : presets) {
         if (p.name == name) {
           // Update existing preset
-          p.notes = currentNotes; // THIS LINE WAS MISSING. It ensures the notes from RAM are used.
+          p.notes = currentNotes; // This now uses the potentially updated value.
           p.dryingTemp = dryingTemperature; p.setpointHum = setpointHumidity; p.warmTemp = warmTemperature; p.humHyst = humidityHysteresis;
           p.stallInterval = stallCheckInterval; p.stallDelta = stallHumidityDelta; p.heatDur = heatDuration;
           p.heatAction = heatCompletionAction; p.logInt = logIntervalMillis; p.mode = selectedMode;

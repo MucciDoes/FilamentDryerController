@@ -235,6 +235,7 @@
                 if (save) {
                     const newNotes = textarea.value;
                     element.innerText = newNotes; // Immediately update UI text
+                    element.innerText = newNotes; // **THE FIX**: This line was missing. It updates the div's text after editing.
                     postData('/setnotes', 'value=' + encodeURIComponent(newNotes)); // Send new notes to the controller
                 }
                 textarea.remove();
@@ -305,14 +306,18 @@
         function savePreset() {
             const name = prompt("Save current settings as preset name:", document.getElementById('preset_select').value + " (Copy)");
             if (name) {
-                postData('/presets/save', 'name=' + encodeURIComponent(name));
+                // **THE FIX**: Also send the current notes from the UI.
+                const notes = document.getElementById('preset_notes').innerText;
+                postData('/presets/save', 'name=' + encodeURIComponent(name) + '&notes=' + encodeURIComponent(notes));
             }
             setTimeout(populatePresets, 500); // Refresh dropdown after a delay
         }
         function updatePreset() {
             const name = document.getElementById('preset_select').value;
             if (name && confirm(`Are you sure you want to overwrite the preset "${name}" with the current settings?`)) {
-                postData('/presets/save', 'name=' + encodeURIComponent(name));
+                // **THE FIX**: Also send the current notes from the UI.
+                const notes = document.getElementById('preset_notes').innerText;
+                postData('/presets/save', 'name=' + encodeURIComponent(name) + '&notes=' + encodeURIComponent(notes));
             }
         }
         function deletePreset() {
