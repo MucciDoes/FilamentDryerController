@@ -106,6 +106,8 @@ TransitionReason lastTransitionReason = REASON_NONE;
 bool isHeaterEnabled = false; // Master switch for the heating process, OFF by default for safety
 
 /* Logging State */
+bool isWebClientConnected = false;
+bool ipMessageCleared = false;
 bool isLoggingEnabled = false;
 uint32_t loggingStartTime = 0;
 uint32_t logIntervalMillis = 60000; // Default 1 minute
@@ -370,8 +372,8 @@ void setupWiFi() {
   }
 
   char msgBuffer[50];
-  sprintf(msgBuffer, "IP: %s", WiFi.localIP().toString().c_str());
-  logToWeb("WiFi Connected. IP: " + WiFi.localIP().toString());
+  sprintf(msgBuffer, "Web Client at: %s", WiFi.localIP().toString().c_str()); // Prepare message for TFT
+  // Do NOT log to web client, as they already know the IP.
   update_message_box(msgBuffer);
 }
 
@@ -912,13 +914,17 @@ void update_sensor_task(lv_timer_t * timer) {
     char humStr[8];
     dtostrf(h, 4, 1, humStr);
     lv_label_set_text_fmt(hum_label_value, "%s %%", humStr);
-
-    sprintf(msgBuffer, "Temp: %.1f C, Humidity: %.1f %%", t, h);
-    update_message_box(msgBuffer);
   }
 }
 
 void controlHeaterTask(lv_timer_t * timer) {
+  // --- Clear IP from TFT on first web client connection ---
+  // This provides a clean UI once the user has connected via the web.
+  if (isWebClientConnected && !ipMessageCleared) {
+    update_message_box(""); // Clear the message box
+    ipMessageCleared = true;
+  }
+
   // --- Process State Machine ---
   State previousState = currentState;
 
@@ -1083,5 +1089,13 @@ void controlHeaterTask(lv_timer_t * timer) {
 }
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-  //Handle WebSocket events
+  // Handle WebSocket events
+  if (type == WS_EVT_CONNECT) {
+    // A web client has connected via WebSocket
+    isWebClientConnected = true;
+  } else if (type == WS_EVT_DISCONNECT) {
+    // client disconnected
+  } else if (type == WS_EVT_DATA) {
+    // data received
+  }
 }
