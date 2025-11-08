@@ -55,12 +55,12 @@ Ensure your `platformio.ini` file is correctly configured.
     *   `esphome/ESPAsyncWebServer-esphome`
     *   `esphome/AsyncTCP-esphome`
 *   **TFT_eSPI Configuration:** The `build_flags` section in `platformio.ini` contains specific definitions for your TFT display (ILI9341, pin assignments, etc.). **You may need to adjust these flags to match your specific display and wiring.**
-*   **Wi-Fi Credentials:** Update the `ssid` and `password` variables in `src/main.cpp` with your local Wi-Fi network credentials.
-    ```cpp
-    // Configure your local Wi-Fi network credentials
-    const char* ssid = "YOUR_WIFI_SSID";
-    const char* password = "YOUR_WIFI_PASSWORD";
-    ```
+*   **Wi-Fi Credentials:** This project uses a separate, untracked file for Wi-Fi credentials to prevent accidentally committing them to your repository.
+    1.  Find the `wifi_credentials.h.example` file in the `/doc` directory.
+    2.  **Copy** this file to the `/src` directory.
+    3.  **Rename** the copied file to `wifi_credentials.h`.
+    4.  Open `src/wifi_credentials.h` and replace `"YOUR_WIFI_SSID"` and `"YOUR_WIFI_PASSWORD"` with your local network details.
+    The `.gitignore` file is configured to ensure `src/wifi_credentials.h` is never committed.
 *   **Heater Pin & Serial Monitor:** The heater relay is controlled by `GPIO1` (the `TX` pin). **This means the PlatformIO Serial Monitor will be unavailable for debugging output.** All operational feedback must be viewed via the web interface or the local TFT display.
 
 ### 3. Upload Firmware
@@ -139,7 +139,7 @@ The logging feature provides real-time data for monitoring and analysis.
 ## Troubleshooting
 
 *   **Wi-Fi Connection Issues:**
-    *   Check your `ssid` and `password` in `src/main.cpp` (for developer setup).
+    *   Ensure you have correctly created and filled out `src/wifi_credentials.h` as described in the "Getting Started" section.
     *   Ensure your router is broadcasting on 2.4GHz.
     *   Verify the ESP32 is within range of your Wi-Fi network.
 *   **Sensor Errors:** If temperature/humidity show "Error", check wiring to the SHT31 sensor (SDA=27, SCL=22).

@@ -4,6 +4,9 @@
 # PlatformIO specific
 .pio/
 
+# Ignore sensitive files
+src/wifi_credentials.h
+
 # Other build artifacts
 *.bin
 *.elf

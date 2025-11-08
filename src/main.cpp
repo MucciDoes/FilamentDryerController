@@ -25,9 +25,7 @@ const int HEATER_PIN = 1; // GPIO 1 (TX pin) for the ZGT-25 DA relay
 bool isHeaterOn = false;  // Tracks the actual state of the heater relay
 
 /* Network Globals */
-// IMPORTANT: Replace with your network credentials
-const char* ssid = "meshMucci2427";
-const char* password = "9275cabfed";
+#include "wifi_credentials.h" // Your WiFi credentials should be in this file
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws"); // Create a WebSocket object
 
