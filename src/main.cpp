@@ -464,10 +464,9 @@ void setupWebServer() {
 
   server.on("/presets/save", HTTP_POST, [](AsyncWebServerRequest *request){
     if (request->hasParam("name", true)) {
-      // **THE FIX**: Before saving, update currentNotes from the web UI if the parameter is sent.
-      // This ensures we save the notes currently visible in the user's browser, not stale data.
+      String notes_from_request = "";
       if (request->hasParam("notes", true)) {
-        currentNotes = request->getParam("notes", true)->value();
+        notes_from_request = request->getParam("notes", true)->value();
       }
 
       String name = request->getParam("name", true)->value();
@@ -475,7 +474,7 @@ void setupWebServer() {
       for (auto& p : presets) {
         if (p.name == name) {
           // Update existing preset
-          p.notes = currentNotes; // This now uses the potentially updated value.
+          p.notes = notes_from_request; 
           p.dryingTemp = dryingTemperature; p.setpointHum = setpointHumidity; p.warmTemp = warmTemperature; p.humHyst = humidityHysteresis;
           p.stallInterval = stallCheckInterval; p.stallDelta = stallHumidityDelta; p.heatDur = heatDuration;
           p.heatAction = heatCompletionAction; p.logInt = logIntervalMillis; p.mode = selectedMode;
@@ -487,7 +486,7 @@ void setupWebServer() {
       // If not found, create a new one
       Preset p_new;
       p_new.name = name;
-      p_new.notes = currentNotes; // Use the global variable
+      p_new.notes = notes_from_request; 
       p_new.dryingTemp = dryingTemperature; p_new.setpointHum = setpointHumidity; p_new.warmTemp = warmTemperature; p_new.humHyst = humidityHysteresis;
       p_new.stallInterval = stallCheckInterval; p_new.stallDelta = stallHumidityDelta; p_new.heatDur = heatDuration;
       p_new.heatAction = heatCompletionAction; p_new.logInt = logIntervalMillis; p_new.mode = selectedMode;

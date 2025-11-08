@@ -27,6 +27,7 @@
         /* Hide number input spinners */
         .edit-in-place[type=number] {
             -moz-appearance: textfield; /* Firefox */
+            appearance: none;
         }
         .edit-in-place::-webkit-outer-spin-button,
         .edit-in-place::-webkit-inner-spin-button {
@@ -234,9 +235,15 @@
             const finishEdit = (save) => {
                 if (save) {
                     const newNotes = textarea.value;
-                    element.innerText = newNotes; // Immediately update UI text
-                    element.innerText = newNotes; // **THE FIX**: This line was missing. It updates the div's text after editing.
-                    postData('/setnotes', 'value=' + encodeURIComponent(newNotes)); // Send new notes to the controller
+                    element.innerText = newNotes; 
+                    postData('/setnotes', 'value=' + encodeURIComponent(newNotes)); // Send new notes to the controller to update its temporary state
+
+                    // Also update the notes in the local `allPresets` array.
+                    const selectedName = document.getElementById('preset_select').value;
+                    const presetToUpdate = allPresets.find(p => p.name === selectedName);
+                    if (presetToUpdate) {
+                        presetToUpdate.notes = newNotes;
+                    }
                 }
                 textarea.remove();
                 element.style.display = 'block';
