@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <TFT_eSPI.h>
+#include <deque>
 #include <Wire.h>
 #include "Adafruit_SHT31.h"
 #include <WiFi.h>
@@ -19,6 +20,14 @@ static lv_color_t buf[screenWidth * 10];
 Adafruit_SHT31 sht31 = Adafruit_SHT31();
 float currentTemperature = 0.0; // Global to store latest temp
 float currentHumidity = 0.0;    // Global to store latest hum
+float humidityRate = 0.0;       // % per hour
+
+struct HumidityReading {
+  uint32_t timestamp;
+  float humidity;
+};
+// Use a deque to store the last 30 minutes of humidity readings (approx)
+std::deque<HumidityReading> humidityHistory;
 
 /* Hardware Pins */
 const int HEATER_PIN = 1; // GPIO 1 (TX pin) for the ZGT-25 DA relay
@@ -67,14 +76,11 @@ float dryingTemperature = 50.0;
 float setpointHumidity = 30.0;
 float warmTemperature = 35.0;
 float humidityHysteresis = 5.0; // %RH to allow humidity to rise before re-engaging drying
-float effectiveSetpointHumidity = 30.0; // The dynamically adjusted humidity target
-uint32_t stallCheckInterval = 1800000; // 30 minutes in milliseconds
-float stallHumidityDelta = 0.5; // Minimum %RH drop required over the interval to not be considered stalled
+// Stall settings are no longer used for process control but are kept for future UI reporting.
+uint32_t stallCheckInterval = 1800000; // 30 minutes in ms
+float stallHumidityDelta = 0.5; // %RH drop
 uint32_t heatDuration = 240 * 60000; // 4 hours in milliseconds
 uint32_t heatStartTime = 0;
-
-uint32_t lastStallCheckTime = 0;
-float humidityAtLastStallCheck = 0;
 
 enum State {
   STATE_IDLE,
@@ -96,14 +102,15 @@ enum TransitionReason {
   REASON_USER_ACTION,
   REASON_TARGET_MET,
   REASON_STALLED,
-  REASON_TIMER_EXPIRED,
-  REASON_HYSTERESIS
+  REASON_TIMER_EXPIRED
 };
 State currentState = STATE_IDLE;
 Mode selectedMode = MODE_DRY; // Default to Dry mode
 HeatCompletionAction heatCompletionAction = ACTION_STOP;
 TransitionReason lastTransitionReason = REASON_NONE;
 bool isHeaterEnabled = false; // Master switch for the heating process, OFF by default for safety
+
+bool isStalled = false; // Informational flag for UI and logging
 
 /* Logging State */
 bool isWebClientConnected = false;
@@ -147,6 +154,7 @@ void applyPreset(const Preset& preset);
 void update_setpoint_display();
 void update_process_status_display();
 void update_heater_status_display();
+void calculateHumidityRate();
 void update_message_box(const char* message);
 void heater_enable_switch_event_handler(lv_event_t * e);
 void setupSensor();
@@ -280,7 +288,7 @@ void loadPresets() {
     p.setpointHum = obj["setpointHum"];
     p.warmTemp = obj["warmTemp"];
     p.humHyst = obj["humHyst"];
-    p.stallInterval = obj["stallInterval"].as<unsigned long>() * 60000UL; // Use unsigned long for safe math
+    p.stallInterval = obj["stallInterval"].as<unsigned long>() * 60000UL;
     p.stallDelta = obj["stallDelta"];
     p.heatDur = (uint32_t)(obj["heatDur"].as<float>() * 3600000.0f); // Keep float for hours, but cast result
     p.heatAction = obj["heatAction"];
@@ -388,6 +396,7 @@ void setupWebServer() {
     String json = "{";
     json += "\"temperature\":" + (isnan(currentTemperature) ? "null" : String(currentTemperature, 1));
     json += ",\"humidity\":" + (isnan(currentHumidity) ? "null" : String(currentHumidity, 1));
+    json += ",\"humidity_rate\":" + String(humidityRate, 2);
     json += ",\"drying_temp\":";
     json += String(dryingTemperature, 1);
     json += ",\"setpoint_hum\":";
@@ -413,6 +422,8 @@ void setupWebServer() {
     json += String(remaining > 0 ? remaining : 0);
     json += ",\"log_interval\":";
     json += String(logIntervalMillis / 60000.0, 1);
+    json += ",\"is_stalled\":";
+    json += isStalled ? "true" : "false";
     json += ",\"selected_mode\":";
     json += String(selectedMode);
     json += ",\"heat_action\":\"" + String(heatCompletionAction == ACTION_STOP ? "Stop" : "Warm") + "\"";
@@ -425,9 +436,22 @@ void setupWebServer() {
     isLoggingEnabled = true;
     loggingStartTime = millis();
     lastTimedLogTime = loggingStartTime; // Reset timed log on start
+    // Log the current settings first
+    String setup_string = "SETUP,Mode:" + String(selectedMode == MODE_DRY ? "Dry" : (selectedMode == MODE_HEAT ? "Heat" : "Warm"));
+    setup_string += ",DryingTemp:" + String(dryingTemperature, 1);
+    setup_string += ",WarmingTemp:" + String(warmTemperature, 1);
+    setup_string += ",HumSet:" + String(setpointHumidity, 1);
+    setup_string += ",HumHyst:" + String(humidityHysteresis, 1);
+    setup_string += ",HeatDur:" + String(heatDuration/3600000.0, 1);
+    setup_string += ",HeatAction:" + String(heatCompletionAction == ACTION_STOP ? "Stop" : "Warm");
+    ws.textAll(setup_string);
+
     // Send header as first log entry
-    String header = "SETUP,DryingTemp:" + String(dryingTemperature) + ",WarmingTemp:" + String(warmTemperature) + ",HumSet:" + String(setpointHumidity) + ",HumHyst:" + String(humidityHysteresis) + ",StallInt:" + String(stallCheckInterval/60000) + ",StallDelta:" + String(stallHumidityDelta) + ",HeatDur:" + String(heatDuration/3600000.0, 1) + ",HeatAction:" + (heatCompletionAction == ACTION_STOP ? "Stop" : "Warm") + ",LogIntervalMin:" + String(logIntervalMillis / 60000.0, 1);
+    String header = "Timestamp,Event,Temp,Humidity,HumRate";
     ws.textAll(header);
+
+    // Send the first data point immediately
+    sendLog("TIMED");
     request->send(200, "text/plain", "OK");
   });
   server.on("/stop_log", HTTP_POST, [](AsyncWebServerRequest *request){
@@ -662,9 +686,6 @@ void setupWebServer() {
           switch(selectedMode) {
             case MODE_DRY:
               currentState = STATE_DRYING;
-              // Reset stall detection on mode change
-              lastStallCheckTime = millis();
-              humidityAtLastStallCheck = currentHumidity;
               lastTransitionReason = REASON_USER_ACTION;
               break;
             case MODE_HEAT:
@@ -876,12 +897,41 @@ void sendLog(String event) {
   uint32_t s = (elapsed_ms % 60000) / 1000;
   char timeStr[10];
   sprintf(timeStr, "%02d:%02d:%02d", h, m, s);
-
-  // Format: Timestamp,Event,Temp,Humidity
-  String logEntry = String(timeStr) + "," + event + "," + String(currentTemperature, 1) + "," + String(currentHumidity, 1);
   
+  // Format: Timestamp,Event,Temp,Humidity,HumRate
+  String logEntry = String(timeStr) + "," + event + "," + String(currentTemperature, 1) + "," + String(currentHumidity, 1) + "," + String(humidityRate, 2);
   ws.textAll(logEntry);
   Serial.println("Log: " + logEntry);
+}
+
+void calculateHumidityRate() {
+  uint32_t now = millis();
+  const uint32_t HISTORY_DURATION = 30 * 60 * 1000; // 30 minutes
+
+  // Add current reading to history
+  if (!isnan(currentHumidity)) {
+    humidityHistory.push_back({now, currentHumidity});
+  }
+
+  // Remove old readings from the front of the deque
+  while (!humidityHistory.empty() && (now - humidityHistory.front().timestamp > HISTORY_DURATION)) {
+    humidityHistory.pop_front();
+  }
+
+  if (humidityHistory.size() < 2) {
+    humidityRate = 0.0; // Not enough data
+    return;
+  }
+
+  // Calculate rate: (last_humidity - first_humidity) / (time_span_in_hours)
+  float delta_hum = humidityHistory.back().humidity - humidityHistory.front().humidity;
+  float delta_time_hr = (float)(humidityHistory.back().timestamp - humidityHistory.front().timestamp) / 3600000.0f;
+
+  if (delta_time_hr > 0) {
+    humidityRate = delta_hum / delta_time_hr;
+  } else {
+    humidityRate = 0.0;
+  }
 }
 
 void update_sensor_task(lv_timer_t * timer) {
@@ -914,11 +964,15 @@ void update_sensor_task(lv_timer_t * timer) {
     char humStr[8];
     dtostrf(h, 4, 1, humStr);
     lv_label_set_text_fmt(hum_label_value, "%s %%", humStr);
+
+    // After updating sensor values, calculate the rate
+    calculateHumidityRate();
   }
 }
 
 void controlHeaterTask(lv_timer_t * timer) {
   // --- Clear IP from TFT on first web client connection ---
+  State previousState = currentState;
   // This provides a clean UI once the user has connected via the web.
   if (isWebClientConnected && !ipMessageCleared) {
     update_message_box(""); // Clear the message box
@@ -926,7 +980,20 @@ void controlHeaterTask(lv_timer_t * timer) {
   }
 
   // --- Process State Machine ---
-  State previousState = currentState;
+  
+  // --- Informational Stall Detection ---
+  // This does not affect the process, only for UI and logging.
+  bool wasStalledLastLoop = isStalled;
+  if (selectedMode == MODE_DRY && currentState == STATE_DRYING && humidityRate > -0.1 && humidityRate < 0.1) {
+    isStalled = true;
+  } else {
+    isStalled = false;
+  }
+
+  // If we just entered a stalled state, log it.
+  if (isStalled && !wasStalledLastLoop) {
+    sendLog("STALLED");
+  }
 
   if (!isHeaterEnabled) {
     currentState = STATE_IDLE;
@@ -938,12 +1005,8 @@ void controlHeaterTask(lv_timer_t * timer) {
       // Transition to the user's selected mode and perform initial setup
       if (selectedMode == MODE_DRY) {
         currentState = STATE_DRYING;
-        lastStallCheckTime = millis();
-        humidityAtLastStallCheck = currentHumidity;
-        effectiveSetpointHumidity = setpointHumidity;
         lastTransitionReason = REASON_USER_ACTION;
-      }
-      else if (selectedMode == MODE_HEAT) {
+      } else if (selectedMode == MODE_HEAT) {
         currentState = STATE_HEATING;
         heatStartTime = millis(); // Start the timer
         lastTransitionReason = REASON_USER_ACTION;
@@ -956,31 +1019,17 @@ void controlHeaterTask(lv_timer_t * timer) {
     
     // --- State Transition Logic ---
     if (currentState == STATE_DRYING) {
-      // Check for completion by humidity target
-      if (currentHumidity <= effectiveSetpointHumidity && currentHumidity > 0) {
-        update_message_box("Dry point reached. Switching to Warm.");
-        lastTransitionReason = REASON_TARGET_MET;
+      // In the new logic, DRYING state is for active drying. If humidity rises above the
+      // setpoint + hysteresis, we ensure we are in this state.
+      if (currentHumidity > (setpointHumidity + humidityHysteresis)) {
+        // This condition is met, so we are actively drying. No state change needed.
+      } else if (currentHumidity <= setpointHumidity) {
+        // We've reached the target, switch to WARMING to maintain.
+        humidityHistory.clear(); // Clear history on state change for accurate rate calculation
+        humidityRate = 0.0;
         currentState = STATE_WARMING;
-      } 
-      // Check for stall condition
-      else if (millis() - lastStallCheckTime > stallCheckInterval) {
-        if ((humidityAtLastStallCheck - currentHumidity) < stallHumidityDelta) {
-          update_message_box("Stall detected. Switching to Warm.");
-          lastTransitionReason = REASON_STALLED;
-          currentState = STATE_WARMING;
-          effectiveSetpointHumidity = currentHumidity; // The stall point becomes the new effective setpoint
-        } else {
-          lastStallCheckTime = millis();
-          humidityAtLastStallCheck = currentHumidity;
-        }
       }
     } else if (currentState == STATE_WARMING) {
-      // Check if humidity has crept up, but only if the previous state was DRYING
-      if (previousState == STATE_DRYING && currentHumidity > (effectiveSetpointHumidity + humidityHysteresis)) {
-        update_message_box("Humidity rose. Re-engaging Dry mode.");
-        lastTransitionReason = REASON_HYSTERESIS;
-        currentState = STATE_DRYING;
-      }
     } else if (currentState == STATE_HEATING) {
       // Check for timer completion
       if (millis() - heatStartTime > heatDuration) {
@@ -1006,21 +1055,9 @@ void controlHeaterTask(lv_timer_t * timer) {
       currentStatusString = "IDLE";
     }
   } else if (selectedMode == MODE_DRY) {
-    if (currentState == STATE_DRYING) {
-      if (lastTransitionReason == REASON_HYSTERESIS) {
-        currentStatusString = "Dry / RE-DRYING (Maintaining)";
-      } else {
-        currentStatusString = "Dry / DRYING";
-      }
-    } else if (currentState == STATE_WARMING) {
-      if (lastTransitionReason == REASON_TARGET_MET) {
-        currentStatusString = "Dry / WARMING (Setpoint Reached)";
-      } else if (lastTransitionReason == REASON_STALLED) {
-        currentStatusString = "Dry / WARMING (Stalled)";
-      } else {
-        currentStatusString = "Dry / WARMING"; // Fallback
-      }
-    }
+    // Simplified status for DRY mode based on the active state
+    if (currentState == STATE_DRYING) currentStatusString = "Dry / DRYING";
+    else if (currentState == STATE_WARMING) currentStatusString = "Dry / MAINTAINING";
   } else if (selectedMode == MODE_HEAT) {
     if (currentState == STATE_HEATING) currentStatusString = "Heat / HEATING";
     else if (currentState == STATE_WARMING) currentStatusString = "Heat / WARMING (Time Expired)";
@@ -1048,6 +1085,13 @@ void controlHeaterTask(lv_timer_t * timer) {
       break;
     case STATE_WARMING:
       targetTemp = warmTemperature;
+      // If in DRY mode and humidity creeps up, switch back to active drying.
+      if (selectedMode == MODE_DRY && currentHumidity > (setpointHumidity + humidityHysteresis)) {
+        humidityHistory.clear(); // Clear history on state change for accurate rate calculation
+        humidityRate = 0.0;
+        currentState = STATE_DRYING; // This will be handled in the next loop cycle.
+        targetTemp = dryingTemperature;
+      }
       heatingRequired = true;
       break;
     case STATE_IDLE:

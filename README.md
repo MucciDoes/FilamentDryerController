@@ -9,12 +9,13 @@ The Filament Dryer Controller is an ESP32-based solution designed to precisely c
 *   **Real-time Monitoring:** Displays current temperature and humidity on both local TFT and web UI.
 *   **Multiple Operating Modes:**
     *   **DRY Mode:** Heats to a target temperature until a target humidity is reached, then transitions to a `WARM` state. Includes stall detection and re-drying logic.
+    *   **DRY Mode:** Heats aggressively with a `dryingTemperature` to reach a `setpointHumidity`. Once reached, it switches to a lower `warmTemperature` to efficiently maintain the dry state. It will automatically re-engage the higher temperature if humidity rises.
     *   **HEAT Mode:** Heats to a target temperature for a user-defined duration, with configurable completion actions (Stop or Warm).
     *   **WARM Mode:** Maintains a lower temperature indefinitely to keep filament ready.
 *   **Web User Interface (UI):** Responsive web interface for full control and monitoring from any browser.
 *   **In-Place Editing:** Adjust settings directly on the web UI by clicking on values.
 *   **Contextual UI:** Automatically shows/hides relevant settings based on the selected operating mode.
-*   **Detailed Process State:** Provides a clear, chained status (e.g., `Dry / WARMING (Stalled)`) for better understanding of the controller's operation.
+*   **Detailed Process State:** Provides a clear status (e.g., `Dry / DRYING` or `Dry / MAINTAINING`) for better understanding of the controller's operation.
 *   **Preset Management:**
     *   Save, Load, Rename, Delete, and Set Default presets for different filament types.
     *   Presets include all settings and the desired operating mode.
@@ -22,7 +23,7 @@ The Filament Dryer Controller is an ESP32-based solution designed to precisely c
 *   **Real-time Logging:**
     *   Stream live log data (timestamps, events, T/H) to the web UI via WebSockets.
     *   Log events include timed intervals, heater ON/OFF, and status changes.
-    *   Clear and Download log data as a CSV file from the browser.
+    *   Clear and Download log data as a CSV file from the browser. The log now includes the real-time humidity change rate.
 *   **Help System:** Integrated help icons (`<i class="fas fa-info-circle"></i>`) provide contextual explanations for each setting.
 *   **Persistent Settings:** Presets are stored on the ESP32's SPIFFS filesystem and persist across reboots.
 
@@ -95,7 +96,7 @@ The web interface provides a comprehensive dashboard for your filament dryer.
 *   **Control & Status:** Monitor Heater Status, Process Control (Enable/Disable), and detailed Process State.
 *   **Temperature Settings:** Configure target temperatures and heat duration.
 *   **Humidity Settings:** Configure humidity setpoints, hysteresis, and stall detection (visible only in Dry mode).
-*   **Logging:** View real-time log data, start/stop logging, clear logs, and download as CSV.
+*   **Logging:** View real-time log data (including humidity rate), start/stop logging, clear logs, and download as CSV.
 
 ### Interaction
 

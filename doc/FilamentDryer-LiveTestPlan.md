@@ -58,7 +58,7 @@
 *Part A: Successful Drying Cycle (Setpoint Reached)*
 
 1. \[ \]  **Configure for Success:**  Change the  **Stall Delta**  setting to  **0.1**  %.  *(This low value will prevent a stall)*.  
-2. \[ \]  **Select Mode:**  Click the  **Dry**  mode button.  
+2. \[ \]  **Select Mode:**  Click the  **Dry**  mode button.
 3. \[ \]  **Verify UI:**  Confirm the  *Humidity Settings*  group is visible and the  *Heat Duration*  /  *Action*  boxes are hidden.  
 4. \[ \]  **Enable Process:**  Click  **DISABLED**  to start the process.  
 5. \[ \]  **Observe UI:**  Verify "Process State" displays:  **Dry / DRYING**.  
@@ -67,6 +67,7 @@
    * *Time to reach setpoint:*  \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_  
 8. \[ \]  **Observe Final State:**  
    * \[ \] Verify "Process State" status changes to:  **Dry / WARMING (Setpoint Reached)**.  
+   * \[ \] Verify "Process State" status changes to:  **Dry / MAINTAINING**.
    * \[ \] Verify the heater cycles to maintain the  **Warming Temp Setpoint**  (28.0  °C).
 
 *Part B: Humidity Hysteresis (Re-Drying) Test*
@@ -77,19 +78,21 @@
 2. \[ \]  **Observe UI:**  Watch the "Humidity" value on the web page rise above  **55.0 %**  (Setpoint 54% \+ Hysteresis 1%).  
 3. \[ \]  **Observe State Change:**  
    * \[ \] Verify "Process State" immediately changes to:  **Dry / RE-DRYING (Maintaining)**.  
+   * \[ \] Verify "Process State" immediately changes back to:  **Dry / DRYING**.
    * \[ \] Verify the heater engages to lower the humidity again.  
 4. \[ \]  **Disable Process:**  Click  **ENABLED**  to stop the test.
 
-*Part C: Stalled Drying Cycle*
+*Part C: Stalled Process Information*
 
-1. \[ \]  **Configure for Stall:**  Change the  **Stall Delta**  setting back to  **5.0**  %.  
+1. \[ \]  **Configure for Stall:**  Set a very low  **Heating Temp Setpoint**  (e.g., 27.0 °C, just above ambient) to ensure the process cannot make much progress.
 2. \[ \]  **Select Mode:**  Ensure  **Dry**  mode is selected.  
 3. \[ \]  **Enable Process:**  Click  **DISABLED**  to start the process.  
 4. \[ \]  **Observe UI:**  Verify "Process State" displays:  **Dry / DRYING**.  
-5. \[ \]  **Wait for Stall Interval**  (1 minute). Since humidity cannot drop by 5.0% in one minute, a stall is guaranteed.  
-6. \[ \]  **Observe Final State:**  
-   * \[ \] Verify "Process State" status changes to:  **Dry / WARMING (Stalled)**.  
-   * \[ \] Verify the heater cycles to maintain the  **Warming Temp Setpoint**  (28.0  °C).  
+5. \[ \]  **Wait for several minutes** for the humidity rate calculation to stabilize.
+6. \[ \]  **Observe UI:**
+   * \[ \] Verify the "Humidity Rate" value is near 0.00 %/hr.
+   * \[ \] Verify that the text `(STALLED)` appears next to the humidity rate.
+   * \[ \] Verify that the "Process State" remains  **Dry / DRYING**  and does not change.
 7. \[ \]  **Disable Process:**  Click  **ENABLED**  to stop the test.
 
 ---
@@ -98,4 +101,3 @@
 
 1. \[ \]  **WARM Mode:**  Select  **Warm**  mode and enable the process. Verify the status is  **Warm / WARMING**  and the heater maintains the  **Warming Temp Setpoint**. Disable when complete.  
 2. \[ \]  **Help Icons:**  Click several  (i)  icons to confirm the help overlay appears correctly and displays the relevant text.
-

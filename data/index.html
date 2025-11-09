@@ -120,7 +120,13 @@
             var x = new XMLHttpRequest();
             x.onreadystatechange = function () {
                 if (this.readyState == 4 && this.status == 200) {
-                    currentData = JSON.parse(this.responseText);
+                    try {
+                        currentData = JSON.parse(this.responseText);
+                    } catch(e) {
+                        console.error("Failed to parse JSON:", this.responseText);
+                        return; // Stop execution if JSON is invalid
+                    }
+                    
                     // Handle potential sensor errors (null values)
                     if (currentData.temperature === null) {
                         document.getElementById('temp_val').innerText = 'Error';
@@ -132,6 +138,17 @@
                     } else {
                         document.getElementById('hum_val').innerText = currentData.humidity + ' %';
                     }
+
+                    // --- Humidity Rate ---
+                    const humRateEl = document.getElementById('hum_rate_val');
+                    const rate = currentData.humidity_rate;
+                    let rateText = rate.toFixed(2) + ' %/hr';
+                    // The controller now tells us if we are stalled.
+                    if (currentData.is_stalled) {
+                        rateText += ' (STALLED)';
+                    }
+                    humRateEl.innerText = rateText;
+
                     document.getElementById('drying_temp_val').innerText = currentData.drying_temp + ' °C';
                     document.getElementById('hum_set_val').innerText = currentData.setpoint_hum + ' %';
                     document.getElementById('warm_temp_val').innerText = currentData.warm_temp + ' °C';
@@ -538,7 +555,7 @@
         </div>
     </div>
 
-    <div class="grid-container" style="grid-template-columns: 1fr 1fr; max-width: 400px;">
+    <div class="grid-container" style="grid-template-columns: 1fr 1fr 1fr; max-width: 600px;">
         <div class='grid-item sensor-value temp-value'>
             <span class='help-icon' onclick="showHelp('Current measured temperature inside the dryer.')"><i class="fas fa-info-circle"></i></span>
             <div class='label'>Temperature</div>
@@ -548,6 +565,11 @@
             <span class='help-icon' onclick="showHelp('Current measured relative humidity inside the dryer.')"><i class="fas fa-info-circle"></i></span>
             <div class='label'>Humidity</div>
             <div id='hum_val' class='data'>--.- %</div>
+        </div>
+        <div class='grid-item sensor-value hum-value'>
+            <span class='help-icon' onclick="showHelp('Rate of humidity change over the last 30 minutes. A stalled process will show a rate near zero.')"><i class="fas fa-info-circle"></i></span>
+            <div class='label'>Humidity Rate</div>
+            <div id='hum_rate_val' class='data' style="font-size: 1.2em;">--.-- %/hr</div>
         </div>
     </div>
 
